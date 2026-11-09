@@ -55,6 +55,10 @@ impl Ranges {
         self.v.get(i).map(|r| r.0.max(pos)).unwrap_or(u64::MAX)
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.v.iter().copied()
+    }
+
     /// Splits `[start, end)` into the sub-ranges NOT covered by self.
     pub fn gaps(&self, start: u64, end: u64) -> Vec<(u64, u64)> {
         let mut out = vec![];

@@ -467,12 +467,26 @@ impl Mp4Writer {
         Ok(())
     }
 
-    pub fn finish(mut self, sample_entry: &[u8], fps: f64) -> Result<()> {
+    /// Finishes with a constant frame rate.
+    pub fn finish(self, sample_entry: &[u8], fps: f64) -> Result<()> {
         let timescale: u32 = 90000;
         let delta: u32 = (timescale as f64 / fps).round().max(1.0) as u32;
+        let n = self.sizes.len();
+        self.finish_timed(sample_entry, timescale, &vec![delta; n])
+    }
+
+    /// Finishes with one duration per sample (in `timescale` units), e.g. from
+    /// recorder timestamps.
+    pub fn finish_timed(
+        mut self,
+        sample_entry: &[u8],
+        timescale: u32,
+        durations: &[u32],
+    ) -> Result<()> {
         let n = self.sizes.len() as u32;
-        let dur_ts = n as u64 * delta as u64;
-        let dur_ms = (dur_ts * 1000 / timescale as u64) as u32;
+        assert_eq!(durations.len(), self.sizes.len());
+        let dur_ts: u64 = durations.iter().map(|&d| d as u64).sum();
+        let dur_ms = (dur_ts * 1000 / timescale as u64).min(u32::MAX as u64) as u32;
 
         let mut mvhd = vec![];
         mvhd.extend_from_slice(&[0u8; 8]);
@@ -511,9 +525,19 @@ impl Mp4Writer {
         let mut stsd = 1u32.to_be_bytes().to_vec();
         stsd.extend_from_slice(sample_entry);
 
-        let mut stts = 1u32.to_be_bytes().to_vec();
-        stts.extend_from_slice(&n.to_be_bytes());
-        stts.extend_from_slice(&delta.to_be_bytes());
+        // Run-length encoded sample durations.
+        let mut runs: Vec<(u32, u32)> = vec![];
+        for &d in durations {
+            match runs.last_mut() {
+                Some(r) if r.1 == d => r.0 += 1,
+                _ => runs.push((1, d)),
+            }
+        }
+        let mut stts = (runs.len() as u32).to_be_bytes().to_vec();
+        for (c, d) in runs {
+            stts.extend_from_slice(&c.to_be_bytes());
+            stts.extend_from_slice(&d.to_be_bytes());
+        }
 
         let mut stsc = 1u32.to_be_bytes().to_vec();
         stsc.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);

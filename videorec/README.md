@@ -29,6 +29,15 @@ cargo build --release
 ./target/release/videorec recover card.img -o out/ --scope all
 ```
 
+### G-NET 블랙박스 (`.jdr` 파일)
+
+카드에 `.jdr` 파일이 있으면 자동으로 G-NET 형식 처리가 켜집니다 (`--vendor jdr`로 강제, `--vendor none`으로 끔).
+이 장치는 `.jdr` 파일을 미리 만들어 두고 링 방식으로 덮어쓰므로, 파일시스템상 "삭제된 파일"이 없습니다.
+그래서 파일과 상관없이 볼륨 전체에서 청크를 찾아 채널별로, 녹화 시각 순서대로 이어 MP4를 만듭니다.
+결과 파일 이름은 `jdr_<번호>_CH<채널>_<시작시각>.mp4`이고, `report.csv`의 `channel`, `start_time`, `end_time`에 기록됩니다.
+그 파일의 현재 바퀴가 시작된 시각보다 이른 영상은 notes에 "earlier pass of the ring"으로 표시됩니다.
+청크 구조는 공급사 문서나 프로그램이 아니라 실제 카드의 녹화 데이터를 직접 보고 확인한 것이며, 다른 펌웨어 버전에서도 같은지는 확인하지 못했습니다. 오디오(AD)는 아직 디코딩하지 않습니다.
+
 결과물은 `out/`에 저장되고, `report.json`과 `report.csv`에 항목별 원본 위치(오프셋), SHA-256, 프레임 수, 상태가 기록됩니다.
 
 | 상태 | 의미 |
@@ -43,7 +52,7 @@ Windows용 빌드: `cargo build --release --target x86_64-pc-windows-gnu` (mingw
 ## 테스트
 
 ```bash
-python3 tools/make_images.py /tmp/work   # 합성 SD카드 이미지 7종 생성 (ffmpeg, dosfstools, mtools, exfatprogs 필요)
+python3 tools/make_images.py /tmp/work   # 합성 SD카드 이미지 8종 생성 (ffmpeg, dosfstools, mtools, exfatprogs 필요)
 python3 tools/evaluate.py /tmp/work      # 복구 후 원본과 프레임 단위로 비교
 cargo test
 ```
@@ -61,6 +70,7 @@ cargo test
 | raw_noFS | 파일시스템 없음, 파일 헤더 손실 (H.264 + H.265) | 210/240, 150/180 프레임 |
 | avi_overwritten | AVI 헤더와 앞부분 덮어써짐 | 119/150 프레임 |
 | back_to_back | 파일 3개가 빈틈없이 이어서 기록됨 | 180/180, 180/180, 240/240 프레임 |
+| jdr_ring | G-NET식 3채널 링 파일 4개, 2바퀴째가 앞 2.4개 파일을 덮어씀 | 2바퀴째 3채널 360/360, 1바퀴째 남은 부분 3채널 각 240/600 (덮어쓰지 않은 구간 전부) |
 
 - 무작위 데이터 3GB(+SPS/PPS 후보 존재)에서 가짜 스트림 0개, 스캔 속도 약 400MB/s (이 컨테이너 기준)
 - 프레임이 빠진 시나리오는 모두 손실 구간 이후 첫 키프레임부터 복구됩니다. 키프레임 없이 그 이전 프레임은 디코딩할 수 없습니다.

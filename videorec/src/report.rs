@@ -9,7 +9,7 @@ use std::path::Path;
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Recovered {
     pub id: usize,
-    /// fs_deleted_file | carved_container | carved_stream
+    /// fs_deleted_file | carved_container | carved_stream | jdr_clip
     pub kind: String,
     pub output: String,
     pub sha256: String,
@@ -32,6 +32,10 @@ pub struct Recovered {
     pub modified: Option<String>,
     pub created: Option<String>,
     pub config_source: Option<String>,
+    /// Recorder channel and recording time range (from vendor chunk headers).
+    pub channel: Option<u8>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
     /// ok | partial | needs_parameter_sets | damaged
     pub status: String,
     pub notes: String,
@@ -63,7 +67,7 @@ pub fn write_csv(path: &Path, items: &[Recovered]) -> Result<()> {
     let mut f = File::create(path)?;
     writeln!(
         f,
-        "id,kind,status,output,sha256,size,source_start,source_end,codec,width,height,frames,keyframes,duration_s,pieces,name_hint,live_file,live_file_offset,modified,created,config_source,notes"
+        "id,kind,status,output,sha256,size,source_start,source_end,codec,width,height,frames,keyframes,duration_s,pieces,name_hint,live_file,live_file_offset,modified,created,channel,start_time,end_time,config_source,notes"
     )?;
     let o = |v: Option<String>| v.unwrap_or_default();
     for r in items {
@@ -88,6 +92,9 @@ pub fn write_csv(path: &Path, items: &[Recovered]) -> Result<()> {
             o(r.live_file_offset.map(|v| v.to_string())),
             o(r.modified.clone()),
             o(r.created.clone()),
+            o(r.channel.map(|v| v.to_string())),
+            o(r.start_time.clone()),
+            o(r.end_time.clone()),
             o(r.config_source.clone()),
             r.notes.clone(),
         ];

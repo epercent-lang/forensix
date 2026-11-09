@@ -218,6 +218,91 @@ def exfat_image(path, size_mb=128):
     return ExFat(path)
 
 
+# ------------------------------------------------- G-NET-style .jdr ring files
+
+# Chunk layout as observed on a real card (see src/jdr.rs); written here from
+# scratch so the test does not depend on any vendor data.
+JDR_SLOT = 3 * MB
+JDR_SECONDS_PER_SLOT = 5
+
+
+def jdr_streams(vdir):
+    """Per pass and channel: a raw H.264 stream split into access units."""
+    common = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    out = {}
+    for pas, dur in ((1, 20), (2, 12)):
+        for ch, size in ((0, "640x360"), (1, "320x240"), (2, "320x240")):
+            name = f"P{pas}_CH{ch}.h264"
+            run(*common, "-f", "lavfi", "-i",
+                f"testsrc2=size={size}:rate=30:duration={dur},hue=h={pas * 97 + ch * 41}",
+                "-c:v", "libx264", "-preset", "veryfast", "-g", "30", "-bf", "0", "-b:v", "600k",
+                "-x264-params", "aud=0:repeat-headers=1", "-pix_fmt", "yuv420p",
+                os.path.join(vdir, name))
+            data = open(os.path.join(vdir, name), "rb").read()
+            out[(pas, ch)] = (size, split_access_units(data))
+    return out
+
+
+def split_access_units(data):
+    """Annex B H.264 -> list of (is_idr, bytes) per frame; SEI dropped."""
+    idx = []
+    i = data.find(b"\x00\x00\x01")
+    while i >= 0:
+        idx.append(i + 3)
+        i = data.find(b"\x00\x00\x01", i + 3)
+    nals = []
+    for k, s in enumerate(idx):
+        e = idx[k + 1] - 3 if k + 1 < len(idx) else len(data)
+        while e > s and data[e - 1] == 0:
+            e -= 1
+        nals.append(data[s:e])
+    aus, cur, idr = [], b"", False
+    for n in nals:
+        t = n[0] & 0x1F
+        if t == 6:
+            continue
+        cur += b"\x00\x00\x00\x01" + n
+        idr |= t == 5
+        if t in (1, 5):
+            aus.append((idr, cur))
+            cur, idr = b"", False
+    return aus
+
+
+def jdr_chunk(ch, tag, payload, fmt, t_ms):
+    import datetime
+    t = datetime.datetime(2026, 11, 1) + datetime.timedelta(milliseconds=t_ms)
+    head = f"{ch:02d}{tag}".encode() + struct.pack("<II", len(payload), fmt)
+    head += struct.pack("<8H", t.year, t.month, 0, t.day, t.hour, t.minute, t.second, t.microsecond // 1000)
+    return head + payload
+
+
+def jdr_pass(streams, pas, start_ms):
+    """Bytes of each slot for one pass: channels interleaved frame by frame,
+    with audio and sensor chunks, JDR_SECONDS_PER_SLOT seconds per slot."""
+    slots = []
+    n = len(streams[(pas, 0)][1])
+    per = 30 * JDR_SECONDS_PER_SLOT
+    for s0 in range(0, n, per):
+        body = bytearray()
+        for i in range(s0, min(n, s0 + per)):
+            t = start_ms + i * 1000 // 30
+            for ch in (0, 1, 2):
+                size, aus = streams[(pas, ch)]
+                w, h = map(int, size.split("x"))
+                idr, au = aus[i]
+                body += jdr_chunk(ch, "VI" if idr else "VP", au, h << 20 | w << 8 | 30, t)
+            if i % 3 == 0:
+                body += jdr_chunk(0, "AD", os.urandom(1024), 0, t)
+            if i % 10 == 0:
+                body += jdr_chunk(0, "SE", os.urandom(12), 0, t)
+        slot = bytearray(b"1NAJ" + bytes(0x1FC) + b"1VEJ" + bytes(0x800 - 0x204))
+        slot += body
+        assert len(slot) <= JDR_SLOT, len(slot)
+        slots.append(bytes(slot))
+    return slots
+
+
 # ------------------------------------------------------------------- scenarios
 
 def main():
@@ -323,6 +408,35 @@ def main():
         for n in ("B.mp4", "C.mp4", "A.mp4"):
             f.write(open(v(n), "rb").read())
     truth["back_to_back"] = {"expect": ["B.mp4", "C.mp4", "A.mp4"], "live": []}
+
+    # 8. G-NET-style ring: 4 pre-allocated .jdr files. Pass 1 (20 s, three
+    #    channels) filled all of them; pass 2 (12 s) has rewritten files 0
+    #    and 1 and the first part of file 2. Nothing is deleted in the file
+    #    system; pass-1 footage survives only behind pass 2's write position.
+    img = os.path.join(work, "jdr_ring.img")
+    fat32_image(img)
+    run("mmd", "-i", img, "::/data")
+    streams = jdr_streams(vdir)
+    p1 = jdr_pass(streams, 1, 10 * 3600 * 1000)
+    p2 = jdr_pass(streams, 2, 16 * 3600 * 1000)
+    tmp = os.path.join(work, "jdr_tmp")
+    os.makedirs(tmp, exist_ok=True)
+    for k in range(4):
+        slot = bytearray(JDR_SLOT)
+        slot[:len(p1[k])] = p1[k]
+        if k < 2:
+            slot = bytearray(JDR_SLOT)
+            slot[:len(p2[k])] = p2[k]
+        elif k == 2:
+            # Pass 2 (12 s) ended 2 s into this file.
+            slot[:len(p2[2])] = p2[2]
+        fn = os.path.join(tmp, f"{k:08d}.jdr")
+        open(fn, "wb").write(slot)
+        run("mcopy", "-i", img, fn, f"::/data/{k:08d}.jdr")
+    shutil.rmtree(tmp)
+    # Pass 1 keeps roughly seconds 12-20 of 20; pass 2 is complete.
+    truth["jdr_ring"] = {"expect": [f"P{p}_CH{c}.h264" for p in (1, 2) for c in (0, 1, 2)], "live": [],
+                         "min_share": {f"P1_CH{c}.h264": 0.35 for c in (0, 1, 2)}}
 
     json.dump(truth, open(os.path.join(work, "truth.json"), "w"), indent=2)
     print("images written to", work)

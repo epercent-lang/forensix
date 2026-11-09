@@ -530,7 +530,7 @@ fn h264_rest_ok(b: &mut BitReader, nal: &[u8], st: u32, s: &SpsInfo, p: &Pps264)
             if !is_i && b.bit()? == 1 {
                 for _ in 0..33 {
                     match b.ue()? {
-                        0 | 1 | 2 => {
+                        0..=2 => {
                             b.ue()?;
                         }
                         3 => break,
@@ -659,10 +659,10 @@ pub fn slice_head(
                 }
                 _ => None,
             };
-            if let (Some(s), Some(p)) = (sps, pps.and_then(|p| p.h264)) {
-                if !h264_rest_ok(&mut b, nal, slice_type % 5, s, &p) {
-                    return None;
-                }
+            if let (Some(s), Some(p)) = (sps, pps.and_then(|p| p.h264))
+                && !h264_rest_ok(&mut b, nal, slice_type % 5, s, &p)
+            {
+                return None;
             }
             Some(SliceHead {
                 pps_id,

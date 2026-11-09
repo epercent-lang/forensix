@@ -2,6 +2,7 @@
 //!
 //! The source is opened read-only. Recovery runs in three stages:
 //! 1. file-system metadata (deleted FAT32/exFAT entries),
+//!    then recorder-specific chunk formats (G-NET `.jdr`) over the whole volume,
 //! 2. container carving (intact MP4/MOV/AVI),
 //! 3. frame-level carving of H.264/H.265 streams in what is left.
 
@@ -9,6 +10,7 @@ mod codec;
 mod container;
 mod fs;
 mod io;
+mod jdr;
 mod mp4;
 mod ranges;
 mod report;
@@ -51,6 +53,16 @@ enum Scope {
     All,
 }
 
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum Vendor {
+    /// Use a recorder format when the card's files show it (e.g. `*.jdr`).
+    Auto,
+    /// Always scan for G-NET `.jdr` chunks.
+    Jdr,
+    /// Generic carving only.
+    None,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Show partitions, file systems and deleted entries.
@@ -88,6 +100,13 @@ enum Cmd {
         fps: Option<f64>,
         #[arg(long, value_enum, default_value_t = Scope::Auto)]
         scope: Scope,
+        /// Recorder-specific format handling.
+        #[arg(long, value_enum, default_value_t = Vendor::Auto)]
+        vendor: Vendor,
+        /// Largest time gap (ms) between frames still treated as one clip
+        /// (recorder formats with timestamps).
+        #[arg(long, default_value_t = 2000)]
+        max_gap_ms: i64,
         /// Largest gap (KiB) between NAL runs still treated as one stream
         /// (interleaved audio, metadata).
         #[arg(long, default_value_t = 1024)]
@@ -181,6 +200,8 @@ fn recover(
     codec_arg: CodecArg,
     fps: Option<f64>,
     scope: Scope,
+    vendor: Vendor,
+    max_gap_ms: i64,
     max_gap_kib: u64,
     min_frames: usize,
     keep_leading: bool,
@@ -208,6 +229,9 @@ fn recover(
     let mut vol_info = vec![];
     // (start, end, offset of start within the file, path) of live files.
     let mut live_map: Vec<(u64, u64, u64, String)> = vec![];
+    // Volumes to scan for `.jdr` chunks, and the data start of each live `.jdr` file.
+    let mut jdr_vols: Vec<(u64, u64)> = vec![];
+    let mut jdr_files: Vec<(u64, u64)> = vec![];
 
     for v in volumes(&src)? {
         let fsi = if no_fs {
@@ -234,8 +258,22 @@ fn recover(
             ),
             _ => regions.push((v.offset, vend)),
         }
+        let has_jdr = fsi.as_ref().is_some_and(|f| {
+            f.live
+                .iter()
+                .chain(&f.deleted)
+                .any(|x| x.path.to_ascii_lowercase().ends_with(".jdr"))
+        });
+        if vendor == Vendor::Jdr || (vendor == Vendor::Auto && has_jdr) {
+            jdr_vols.push((v.offset, vend));
+        }
         let Some(fsi) = fsi else { continue };
         for f in &fsi.live {
+            if f.path.to_ascii_lowercase().ends_with(".jdr")
+                && let (Some(&(a, _)), Some(&(_, b))) = (f.extents.first(), f.extents.last())
+            {
+                jdr_files.push((a, b));
+            }
             let mut base = 0u64;
             for &(a, b) in &f.extents {
                 live_map.push((a, b, base, f.path.clone()));
@@ -333,6 +371,58 @@ fn recover(
         }
     }
     covered.normalize();
+
+    // Stage 1b: recorder chunk formats, scanned over the whole volume because
+    // the recorder overwrites inside pre-allocated files.
+    let mut jdr_discarded = 0usize;
+    let mut jdr_chunks_total = 0usize;
+    let mut jdr_older = 0usize;
+    for &(a, b) in &jdr_vols {
+        let mut chunks = vec![];
+        let mut cov = Ranges::new();
+        for (s, e) in covered.gaps(a, b) {
+            jdr::scan(&src, s, e, &mut chunks, &mut cov)?;
+        }
+        jdr_chunks_total += chunks.len();
+        let (mut got, d) =
+            jdr::write_clips(&src, &chunks, out, items.len() + 1, max_gap_ms, min_frames)?;
+        jdr_discarded += d;
+        // Time of the first chunk of each live file = start of the pass now
+        // in that file; clips there with earlier times are left from a
+        // previous pass of the ring.
+        let first_time: std::collections::HashMap<u64, i64> =
+            chunks.iter().map(|c| (c.off, c.t_ms)).collect();
+        let mut files: Vec<(u64, u64, i64)> = jdr_files
+            .iter()
+            .filter_map(|&(s, e)| first_time.get(&(s + 0x800)).map(|&t| (s, e, t)))
+            .collect();
+        files.sort_unstable();
+        for r in got.iter_mut() {
+            let i = files.partition_point(|f| f.0 <= r.source_start);
+            let Some(&(_, fend, t0)) = i.checked_sub(1).and_then(|k| files.get(k)) else {
+                continue;
+            };
+            if r.source_start < fend
+                && r.start_time.as_deref() < Some(jdr::format_time(t0).as_str())
+            {
+                jdr_older += 1;
+                r.notes.push_str(&format!(
+                    "; recorded before the current pass of this file began ({}) — left over from an earlier pass of the ring",
+                    jdr::format_time(t0)
+                ));
+            }
+        }
+        items.extend(got);
+        for (s, e) in cov.iter() {
+            covered.add(s, e);
+        }
+    }
+    covered.normalize();
+    if !jdr_vols.is_empty() {
+        summary.insert("jdr_chunks".into(), jdr_chunks_total.into());
+        summary.insert("jdr_clips_from_earlier_pass".into(), jdr_older.into());
+        summary.insert("jdr_segments_discarded".into(), jdr_discarded.into());
+    }
 
     // Stage 2: intact containers in the scanned regions.
     let mut damaged_containers = 0usize;
@@ -575,6 +665,8 @@ fn main() -> Result<()> {
             codec,
             fps,
             scope,
+            vendor,
+            max_gap_ms,
             max_gap_kib,
             min_frames,
             keep_leading,
@@ -588,6 +680,8 @@ fn main() -> Result<()> {
             codec,
             fps,
             scope,
+            vendor,
+            max_gap_ms,
             max_gap_kib,
             min_frames,
             keep_leading,
