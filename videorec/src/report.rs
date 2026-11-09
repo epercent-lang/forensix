@@ -25,6 +25,10 @@ pub struct Recovered {
     /// Number of separate on-disk pieces the stream was assembled from.
     pub pieces: Option<usize>,
     pub name_hint: Option<String>,
+    /// Live (not deleted) file whose clusters contain `source_start`, and the
+    /// byte offset inside that file. Set when the scan covered allocated space.
+    pub live_file: Option<String>,
+    pub live_file_offset: Option<u64>,
     pub modified: Option<String>,
     pub created: Option<String>,
     pub config_source: Option<String>,
@@ -59,7 +63,7 @@ pub fn write_csv(path: &Path, items: &[Recovered]) -> Result<()> {
     let mut f = File::create(path)?;
     writeln!(
         f,
-        "id,kind,status,output,sha256,size,source_start,source_end,codec,width,height,frames,keyframes,duration_s,pieces,name_hint,modified,created,config_source,notes"
+        "id,kind,status,output,sha256,size,source_start,source_end,codec,width,height,frames,keyframes,duration_s,pieces,name_hint,live_file,live_file_offset,modified,created,config_source,notes"
     )?;
     let o = |v: Option<String>| v.unwrap_or_default();
     for r in items {
@@ -80,6 +84,8 @@ pub fn write_csv(path: &Path, items: &[Recovered]) -> Result<()> {
             o(r.duration_s.map(|v| format!("{v:.2}"))),
             o(r.pieces.map(|v| v.to_string())),
             o(r.name_hint.clone()),
+            o(r.live_file.clone()),
+            o(r.live_file_offset.map(|v| v.to_string())),
             o(r.modified.clone()),
             o(r.created.clone()),
             o(r.config_source.clone()),

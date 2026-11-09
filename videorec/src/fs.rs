@@ -25,11 +25,33 @@ pub struct DeletedFile {
 #[derive(Debug, Default)]
 pub struct FsInfo {
     pub deleted: Vec<DeletedFile>,
+    /// Files still in the directory tree (same record type; method says how
+    /// their extents were read).
+    pub live: Vec<DeletedFile>,
     /// Bytes in use: metadata areas plus allocated clusters (absolute).
     pub allocated: Ranges,
     pub live_files: usize,
     pub cluster_size: u64,
     pub cluster_count: u32,
+}
+
+/// Turns a cluster list into merged absolute byte extents covering `size` bytes.
+fn extents_of(clusters: &[u32], size: u64, cs: u64, coff: impl Fn(u32) -> u64) -> Vec<(u64, u64)> {
+    let mut ext: Vec<(u64, u64)> = vec![];
+    let mut left = size;
+    for &c in clusters {
+        if left == 0 {
+            break;
+        }
+        let s0 = coff(c);
+        let l = left.min(cs);
+        match ext.last_mut() {
+            Some(x) if x.1 == s0 => x.1 += l,
+            _ => ext.push((s0, s0 + l)),
+        }
+        left -= l;
+    }
+    ext
 }
 
 /// DOS date/time (FAT and exFAT timestamp layout) as ISO-8601 local time.
@@ -229,6 +251,20 @@ impl<'a> Fat32<'a> {
                     }
                     if !deleted {
                         info.live_files += 1;
+                        let cl = if self.valid(first) {
+                            self.chain(first)
+                        } else {
+                            vec![]
+                        };
+                        info.live.push(DeletedFile {
+                            path: full,
+                            size,
+                            first_cluster: first,
+                            extents: extents_of(&cl, size, self.cluster_size, |c| self.coff(c)),
+                            method: "fat_chain",
+                            modified: dos_time(le16(e, 24), le16(e, 22)),
+                            created: dos_time(le16(e, 16), le16(e, 14)),
+                        });
                         continue;
                     }
                     if size == 0 || !self.valid(first) {
@@ -449,6 +485,25 @@ impl<'a> ExFat<'a> {
                         }
                     } else if !deleted {
                         info.live_files += 1;
+                        let (cl, method) = if !self.valid(first) {
+                            (vec![], "empty")
+                        } else if no_fat_chain {
+                            (self.contiguous(first, size), "nofatchain_contiguous")
+                        } else {
+                            (
+                                self.chain(first, (size.div_ceil(self.cluster_size) + 1) as usize)?,
+                                "fat_chain",
+                            )
+                        };
+                        info.live.push(DeletedFile {
+                            path: full.clone(),
+                            size,
+                            first_cluster: first,
+                            extents: extents_of(&cl, size, self.cluster_size, |c| self.coff(c)),
+                            method,
+                            modified: modified.clone(),
+                            created: created.clone(),
+                        });
                     } else if size > 0 && self.valid(first) {
                         let (cl, method) = if no_fat_chain {
                             (self.contiguous(first, size), "nofatchain_contiguous")

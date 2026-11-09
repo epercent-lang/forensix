@@ -55,6 +55,24 @@ enum Scope {
 enum Cmd {
     /// Show partitions, file systems and deleted entries.
     Info { image: PathBuf },
+    /// List every file (live and deleted) with size, times and on-disk extents, as CSV.
+    List {
+        image: PathBuf,
+        /// Write CSV here instead of stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Copy one file (live or deleted, by path as shown by `list`) out of the image.
+    Extract {
+        image: PathBuf,
+        /// Path inside the image, e.g. /DCIM/REC0001.AVI
+        path: String,
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Copy at most this many bytes from the start of the file.
+        #[arg(long)]
+        max_bytes: Option<u64>,
+    },
     /// Recover video into an output directory.
     Recover {
         image: PathBuf,
@@ -188,6 +206,8 @@ fn recover(
     let mut regions: Vec<(u64, u64)> = vec![];
     let mut summary = serde_json::Map::new();
     let mut vol_info = vec![];
+    // (start, end, offset of start within the file, path) of live files.
+    let mut live_map: Vec<(u64, u64, u64, String)> = vec![];
 
     for v in volumes(&src)? {
         let fsi = if no_fs {
@@ -215,6 +235,13 @@ fn recover(
             _ => regions.push((v.offset, vend)),
         }
         let Some(fsi) = fsi else { continue };
+        for f in &fsi.live {
+            let mut base = 0u64;
+            for &(a, b) in &f.extents {
+                live_map.push((a, b, base, f.path.clone()));
+                base += b - a;
+            }
+        }
         for d in &fsi.deleted {
             hints.push(stream::Hint {
                 extents: d.extents.clone(),
@@ -379,6 +406,22 @@ fn recover(
         items.extend(carver.results);
     }
 
+    live_map.sort_unstable_by_key(|x| x.0);
+    for it in items.iter_mut() {
+        let i = live_map.partition_point(|x| x.1 <= it.source_start);
+        if let Some((a, _, base, p)) = live_map.get(i).filter(|x| x.0 <= it.source_start) {
+            it.live_file = Some(p.clone());
+            it.live_file_offset = Some(base + (it.source_start - a));
+        }
+    }
+    summary.insert(
+        "items_inside_live_files".into(),
+        items
+            .iter()
+            .filter(|i| i.live_file.is_some())
+            .count()
+            .into(),
+    );
     summary.insert("source".into(), image.display().to_string().into());
     summary.insert("source_size".into(), src.len().into());
     summary.insert("volumes".into(), vol_info.into());
@@ -436,10 +479,95 @@ fn recover(
     Ok(())
 }
 
+fn all_files(src: &Source) -> Result<Vec<(bool, fs::DeletedFile)>> {
+    let mut v = vec![];
+    for vol in volumes(src)? {
+        if let Some(f) = fs::analyze(src, &vol)? {
+            v.extend(f.live.into_iter().map(|x| (true, x)));
+            v.extend(f.deleted.into_iter().map(|x| (false, x)));
+        }
+    }
+    Ok(v)
+}
+
+fn list(image: &Path, out: Option<&Path>) -> Result<()> {
+    let src = Source::open(image)?;
+    let mut w: Box<dyn Write> = match out {
+        Some(p) => Box::new(std::io::BufWriter::new(std::fs::File::create(p)?)),
+        None => Box::new(std::io::stdout().lock()),
+    };
+    writeln!(
+        w,
+        "state,path,size,modified,created,first_cluster,extents,first_offset,last_end,method"
+    )?;
+    for (live, f) in all_files(&src)? {
+        let (a, b) = match (f.extents.first(), f.extents.last()) {
+            (Some(a), Some(b)) => (format!("{:#x}", a.0), format!("{:#x}", b.1)),
+            _ => (String::new(), String::new()),
+        };
+        writeln!(
+            w,
+            "{},\"{}\",{},{},{},{},{},{},{},{}",
+            if live { "live" } else { "deleted" },
+            f.path.replace('"', "\"\""),
+            f.size,
+            f.modified.unwrap_or_default(),
+            f.created.unwrap_or_default(),
+            f.first_cluster,
+            f.extents.len(),
+            a,
+            b,
+            f.method
+        )?;
+    }
+    Ok(())
+}
+
+fn extract(image: &Path, path: &str, out: &Path, max_bytes: Option<u64>) -> Result<()> {
+    let src = Source::open(image)?;
+    let files = all_files(&src)?;
+    let Some((_, f)) = files
+        .iter()
+        .find(|(_, f)| f.path.eq_ignore_ascii_case(path))
+    else {
+        anyhow::bail!("{path} not found; use `list` to see paths");
+    };
+    let mut left = max_bytes.unwrap_or(u64::MAX).min(f.size);
+    let mut w = std::io::BufWriter::new(std::fs::File::create(out)?);
+    for &(a, b) in &f.extents {
+        if left == 0 {
+            break;
+        }
+        let n = (b - a).min(left);
+        let mut p = a;
+        let mut buf = vec![0u8; 4 << 20];
+        while p < a + n {
+            let k = buf.len().min((a + n - p) as usize);
+            let got = src.read_at(p, &mut buf[..k])?;
+            if got == 0 {
+                break;
+            }
+            w.write_all(&buf[..got])?;
+            p += got as u64;
+        }
+        left -= n;
+    }
+    w.flush()?;
+    println!("wrote {} ({} extents)", out.display(), f.extents.len());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Info { image } => info(&image),
+        Cmd::List { image, out } => list(&image, out.as_deref()),
+        Cmd::Extract {
+            image,
+            path,
+            out,
+            max_bytes,
+        } => extract(&image, &path, &out, max_bytes),
         Cmd::Recover {
             image,
             out,
