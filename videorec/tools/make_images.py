@@ -230,7 +230,7 @@ def jdr_streams(vdir):
     """Per pass and channel: a raw H.264 stream split into access units."""
     common = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     out = {}
-    for pas, dur in ((1, 20), (2, 12)):
+    for pas, dur in ((1, 20), (2, 12.5)):
         for ch, size in ((0, "640x360"), (1, "320x240"), (2, "320x240")):
             name = f"P{pas}_CH{ch}.h264"
             run(*common, "-f", "lavfi", "-i",
@@ -410,7 +410,7 @@ def main():
     truth["back_to_back"] = {"expect": ["B.mp4", "C.mp4", "A.mp4"], "live": []}
 
     # 8. G-NET-style ring: 4 pre-allocated .jdr files. Pass 1 (20 s, three
-    #    channels) filled all of them; pass 2 (12 s) has rewritten files 0
+    #    channels) filled all of them; pass 2 (12.5 s) has rewritten files 0
     #    and 1 and the first part of file 2. Nothing is deleted in the file
     #    system; pass-1 footage survives only behind pass 2's write position.
     img = os.path.join(work, "jdr_ring.img")
@@ -428,15 +428,15 @@ def main():
             slot = bytearray(JDR_SLOT)
             slot[:len(p2[k])] = p2[k]
         elif k == 2:
-            # Pass 2 (12 s) ended 2 s into this file.
+            # Pass 2 (12.5 s) ended 2.5 s into this file, in the middle of a GOP of pass 1.
             slot[:len(p2[2])] = p2[2]
         fn = os.path.join(tmp, f"{k:08d}.jdr")
         open(fn, "wb").write(slot)
         run("mcopy", "-i", img, fn, f"::/data/{k:08d}.jdr")
     shutil.rmtree(tmp)
-    # Pass 1 keeps roughly seconds 12-20 of 20; pass 2 is complete.
+    # Pass 1 keeps roughly seconds 12.5-20 of 20; pass 2 is complete.
     truth["jdr_ring"] = {"expect": [f"P{p}_CH{c}.h264" for p in (1, 2) for c in (0, 1, 2)], "live": [],
-                         "min_share": {f"P1_CH{c}.h264": 0.35 for c in (0, 1, 2)}}
+                         "min_share": {f"P1_CH{c}.h264": 0.3 for c in (0, 1, 2)}}
 
     json.dump(truth, open(os.path.join(work, "truth.json"), "w"), indent=2)
     print("images written to", work)

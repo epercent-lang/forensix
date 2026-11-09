@@ -110,6 +110,13 @@ enum Cmd {
         /// Only count what recorder formats hold (per month in report.json); write no video.
         #[arg(long)]
         stats_only: bool,
+        /// Discard recorder-format clips with fewer frames.
+        #[arg(long, default_value_t = 1)]
+        jdr_min_frames: usize,
+        /// Drop recorder-format segments in which no key frame survived
+        /// (by default they are kept, marked partial, with borrowed SPS/PPS).
+        #[arg(long)]
+        jdr_drop_without_key: bool,
         /// Largest gap (KiB) between NAL runs still treated as one stream
         /// (interleaved audio, metadata).
         #[arg(long, default_value_t = 1024)]
@@ -206,6 +213,8 @@ fn recover(
     vendor: Vendor,
     max_gap_ms: i64,
     stats_only: bool,
+    jdr_min_frames: usize,
+    jdr_drop_without_key: bool,
     max_gap_kib: u64,
     min_frames: usize,
     keep_leading: bool,
@@ -396,7 +405,8 @@ fn recover(
             out,
             items.len() + 1,
             max_gap_ms,
-            min_frames,
+            jdr_min_frames,
+            !jdr_drop_without_key,
             stats_only,
             &mut jdr_stats,
         )?;
@@ -683,6 +693,8 @@ fn main() -> Result<()> {
             vendor,
             max_gap_ms,
             stats_only,
+            jdr_min_frames,
+            jdr_drop_without_key,
             max_gap_kib,
             min_frames,
             keep_leading,
@@ -699,6 +711,8 @@ fn main() -> Result<()> {
             vendor,
             max_gap_ms,
             stats_only,
+            jdr_min_frames,
+            jdr_drop_without_key,
             max_gap_kib,
             min_frames,
             keep_leading,

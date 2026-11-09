@@ -236,6 +236,8 @@ pub struct MonthStats {
     pub key_frames: u64,
     /// Frames written to clips.
     pub frames_kept: u64,
+    /// Frames written although no key frame precedes them (damaged picture).
+    pub frames_kept_without_key: u64,
     /// Frames dropped because no key frame precedes them in their segment.
     pub frames_without_key: u64,
     /// Frames dropped because their clip was shorter than `min_frames`.
@@ -256,6 +258,7 @@ pub fn write_clips(
     first_id: usize,
     max_gap_ms: i64,
     min_frames: usize,
+    keep_without_key: bool,
     dry_run: bool,
     stats: &mut Stats,
 ) -> Result<(Vec<Recovered>, usize)> {
@@ -285,19 +288,28 @@ pub fn write_clips(
             }
             let seg = &v[i..j];
             i = j;
-            // A clip must start at a key frame.
+            // A clip starts at a key frame; segments with none are kept only
+            // with `keep_without_key`.
             let k = seg
                 .iter()
                 .position(|c| c.kind == Kind::Key)
                 .unwrap_or(seg.len());
-            for c in &seg[..k] {
-                stats.entry(month(c.t_ms)).or_default().frames_without_key += 1;
-            }
-            if k == seg.len() {
-                discarded += 1;
-                continue;
-            }
-            let seg = &seg[k..];
+            let no_key = k == seg.len();
+            // Frames before the first key frame are kept (damaged picture)
+            // only with `keep_without_key`.
+            let damaged = k > 0 && keep_without_key;
+            let seg = if keep_without_key {
+                seg
+            } else {
+                for c in &seg[..k] {
+                    stats.entry(month(c.t_ms)).or_default().frames_without_key += 1;
+                }
+                if no_key {
+                    discarded += 1;
+                    continue;
+                }
+                &seg[k..]
+            };
             if seg.len() < min_frames {
                 for c in seg {
                     stats
@@ -308,13 +320,42 @@ pub fn write_clips(
                 discarded += 1;
                 continue;
             }
-            for c in seg {
-                stats.entry(month(c.t_ms)).or_default().frames_kept += 1;
+            // Parameter sets: from the clip's own key frame, else from the
+            // nearest key frame of the same channel and format.
+            let params = if no_key {
+                let t = seg[0].t_ms;
+                let mut cands: Vec<&&Chunk> = v
+                    .iter()
+                    .filter(|c| c.kind == Kind::Key && c.fmt == seg[0].fmt)
+                    .collect();
+                cands.sort_by_key(|c| (c.t_ms - t).abs());
+                let mut found = None;
+                for c in cands.into_iter().take(8) {
+                    if let Some(p) = params_of(src, c)? {
+                        found = Some(p);
+                        break;
+                    }
+                }
+                found
+            } else {
+                params_of(src, seg[if damaged { k } else { 0 }])?
+            };
+            let Some(params) = params else {
+                discarded += 1;
+                continue;
+            };
+            for (n, c) in seg.iter().enumerate() {
+                let m = stats.entry(month(c.t_ms)).or_default();
+                if damaged && n < k {
+                    m.frames_kept_without_key += 1;
+                } else {
+                    m.frames_kept += 1;
+                }
             }
             if dry_run {
                 continue;
             }
-            match write_one(src, seg, out, id)? {
+            match write_one(src, seg, out, id, params, if damaged { k } else { 0 })? {
                 Some(r) => {
                     items.push(r);
                     id += 1;
@@ -326,25 +367,30 @@ pub fn write_clips(
     Ok((items, discarded))
 }
 
-fn write_one(src: &Source, seg: &[&Chunk], out: &Path, id: usize) -> Result<Option<Recovered>> {
-    let first = seg[0];
-    let payload = src.read_vec(first.off + HEADER as u64, first.size as usize)?;
+/// SPS and PPS carried in a key-frame chunk.
+fn params_of(src: &Source, c: &Chunk) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+    let payload = src.read_vec(c.off + HEADER as u64, c.size as usize)?;
     let nals = split_nals(&payload);
-    let sps: Vec<Vec<u8>> = nals
-        .iter()
-        .filter(|n| n[0] & 0x1F == 7)
-        .map(|n| n.to_vec())
-        .take(1)
-        .collect();
-    let pps: Vec<Vec<u8>> = nals
-        .iter()
-        .filter(|n| n[0] & 0x1F == 8)
-        .map(|n| n.to_vec())
-        .take(1)
-        .collect();
-    if sps.is_empty() || pps.is_empty() || codec::parse_sps(Codec::H264, &sps[0]).is_none() {
-        return Ok(None);
-    }
+    let sps = nals.iter().find(|n| n[0] & 0x1F == 7).map(|n| n.to_vec());
+    let pps = nals.iter().find(|n| n[0] & 0x1F == 8).map(|n| n.to_vec());
+    Ok(match (sps, pps) {
+        (Some(s), Some(p)) if codec::parse_sps(Codec::H264, &s).is_some() => Some((s, p)),
+        _ => None,
+    })
+}
+
+fn write_one(
+    src: &Source,
+    seg: &[&Chunk],
+    out: &Path,
+    id: usize,
+    params: (Vec<u8>, Vec<u8>),
+    // Number of leading frames with no key frame before them.
+    lead: usize,
+) -> Result<Option<Recovered>> {
+    let no_key = lead > 0;
+    let first = seg[0];
+    let (sps, pps) = (vec![params.0], vec![params.1]);
     let cfg = VideoConfig {
         codec: Codec::H264,
         length_size: 4,
@@ -352,7 +398,15 @@ fn write_one(src: &Source, seg: &[&Chunk], out: &Path, id: usize) -> Result<Opti
         sps,
         pps,
         fps: Some(first.fps() as f64),
-        origin: "in-band (jdr)".into(),
+        origin: if no_key {
+            if lead == seg.len() {
+                "borrowed from another key frame of the same channel and format (jdr)".into()
+            } else {
+                "in-band (jdr)".into()
+            }
+        } else {
+            "in-band (jdr)".into()
+        },
     };
     let Some(entry) = mp4::sample_entry(&cfg) else {
         return Ok(None);
@@ -410,8 +464,15 @@ fn write_one(src: &Source, seg: &[&Chunk], out: &Path, id: usize) -> Result<Opti
         start_time: Some(start),
         end_time: Some(format_time(last.t_ms)),
         config_source: Some(cfg.origin),
-        status: "ok".into(),
-        notes: "timestamps from recorder; video only (audio not decoded)".into(),
+        status: if no_key { "partial" } else { "ok" }.into(),
+        notes: if no_key {
+            format!(
+                "timestamps from recorder; video only (audio not decoded); first {lead} of {} frames have no key frame before them, so their picture is damaged",
+                seg.len()
+            )
+        } else {
+            "timestamps from recorder; video only (audio not decoded)".into()
+        },
         ..Default::default()
     }))
 }
