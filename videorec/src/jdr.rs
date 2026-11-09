@@ -229,6 +229,26 @@ fn split_nals(p: &[u8]) -> Vec<&[u8]> {
 /// Groups video chunks into per-channel clips and writes them as MP4.
 /// Returns report items. A clip ends at a gap longer than `max_gap_ms`, at a
 /// format change, or when the timeline goes backwards.
+/// Per-month frame counts (by recorder time, all channels).
+#[derive(Debug, Default, serde::Serialize)]
+pub struct MonthStats {
+    pub video_chunks: u64,
+    pub key_frames: u64,
+    /// Frames written to clips.
+    pub frames_kept: u64,
+    /// Frames dropped because no key frame precedes them in their segment.
+    pub frames_without_key: u64,
+    /// Frames dropped because their clip was shorter than `min_frames`.
+    pub frames_in_short_clips: u64,
+}
+
+pub type Stats = std::collections::BTreeMap<String, MonthStats>;
+
+fn month(t_ms: i64) -> String {
+    format_time(t_ms)[..7].to_string()
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn write_clips(
     src: &Source,
     chunks: &[Chunk],
@@ -236,6 +256,8 @@ pub fn write_clips(
     first_id: usize,
     max_gap_ms: i64,
     min_frames: usize,
+    dry_run: bool,
+    stats: &mut Stats,
 ) -> Result<(Vec<Recovered>, usize)> {
     let mut items = vec![];
     let mut discarded = 0;
@@ -250,6 +272,11 @@ pub fn write_clips(
             .collect();
         v.sort_by_key(|c| (c.t_ms, c.off));
         v.dedup_by_key(|c| (c.t_ms, c.size));
+        for c in &v {
+            let m = stats.entry(month(c.t_ms)).or_default();
+            m.video_chunks += 1;
+            m.key_frames += (c.kind == Kind::Key) as u64;
+        }
         let mut i = 0;
         while i < v.len() {
             let mut j = i + 1;
@@ -259,13 +286,32 @@ pub fn write_clips(
             let seg = &v[i..j];
             i = j;
             // A clip must start at a key frame.
-            let Some(k) = seg.iter().position(|c| c.kind == Kind::Key) else {
+            let k = seg
+                .iter()
+                .position(|c| c.kind == Kind::Key)
+                .unwrap_or(seg.len());
+            for c in &seg[..k] {
+                stats.entry(month(c.t_ms)).or_default().frames_without_key += 1;
+            }
+            if k == seg.len() {
                 discarded += 1;
                 continue;
-            };
+            }
             let seg = &seg[k..];
             if seg.len() < min_frames {
+                for c in seg {
+                    stats
+                        .entry(month(c.t_ms))
+                        .or_default()
+                        .frames_in_short_clips += 1;
+                }
                 discarded += 1;
+                continue;
+            }
+            for c in seg {
+                stats.entry(month(c.t_ms)).or_default().frames_kept += 1;
+            }
+            if dry_run {
                 continue;
             }
             match write_one(src, seg, out, id)? {
@@ -319,7 +365,7 @@ fn write_one(src: &Source, seg: &[&Chunk], out: &Path, id: usize) -> Result<Opti
     );
     let path = out.join(format!("{stem}.mp4"));
     let mut w = Mp4Writer::create(&path)?;
-    let nominal = (1000 / first.fps().max(1));
+    let nominal = 1000 / first.fps().max(1);
     let mut durations = Vec::with_capacity(seg.len());
     let mut pieces = 1;
     let mut keys = 0;

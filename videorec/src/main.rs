@@ -107,6 +107,9 @@ enum Cmd {
         /// (recorder formats with timestamps).
         #[arg(long, default_value_t = 2000)]
         max_gap_ms: i64,
+        /// Only count what recorder formats hold (per month in report.json); write no video.
+        #[arg(long)]
+        stats_only: bool,
         /// Largest gap (KiB) between NAL runs still treated as one stream
         /// (interleaved audio, metadata).
         #[arg(long, default_value_t = 1024)]
@@ -202,6 +205,7 @@ fn recover(
     scope: Scope,
     vendor: Vendor,
     max_gap_ms: i64,
+    stats_only: bool,
     max_gap_kib: u64,
     min_frames: usize,
     keep_leading: bool,
@@ -377,6 +381,8 @@ fn recover(
     let mut jdr_discarded = 0usize;
     let mut jdr_chunks_total = 0usize;
     let mut jdr_older = 0usize;
+    let mut jdr_stats = jdr::Stats::new();
+    let (no_containers, no_streams) = (no_containers || stats_only, no_streams || stats_only);
     for &(a, b) in &jdr_vols {
         let mut chunks = vec![];
         let mut cov = Ranges::new();
@@ -384,8 +390,16 @@ fn recover(
             jdr::scan(&src, s, e, &mut chunks, &mut cov)?;
         }
         jdr_chunks_total += chunks.len();
-        let (mut got, d) =
-            jdr::write_clips(&src, &chunks, out, items.len() + 1, max_gap_ms, min_frames)?;
+        let (mut got, d) = jdr::write_clips(
+            &src,
+            &chunks,
+            out,
+            items.len() + 1,
+            max_gap_ms,
+            min_frames,
+            stats_only,
+            &mut jdr_stats,
+        )?;
         jdr_discarded += d;
         // Time of the first chunk of each live file = start of the pass now
         // in that file; clips there with earlier times are left from a
@@ -422,6 +436,7 @@ fn recover(
         summary.insert("jdr_chunks".into(), jdr_chunks_total.into());
         summary.insert("jdr_clips_from_earlier_pass".into(), jdr_older.into());
         summary.insert("jdr_segments_discarded".into(), jdr_discarded.into());
+        summary.insert("jdr_by_month".into(), serde_json::to_value(&jdr_stats)?);
     }
 
     // Stage 2: intact containers in the scanned regions.
@@ -667,6 +682,7 @@ fn main() -> Result<()> {
             scope,
             vendor,
             max_gap_ms,
+            stats_only,
             max_gap_kib,
             min_frames,
             keep_leading,
@@ -682,6 +698,7 @@ fn main() -> Result<()> {
             scope,
             vendor,
             max_gap_ms,
+            stats_only,
             max_gap_kib,
             min_frames,
             keep_leading,
