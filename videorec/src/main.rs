@@ -695,6 +695,7 @@ fn recover(
                             .as_ref()
                             .and_then(|x| x.sps_info())
                             .map(|i| i.height),
+                        duration_s: c.duration_s,
                         status: "ok".into(),
                         notes: "container structure verified".into(),
                         ..Default::default()

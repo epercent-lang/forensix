@@ -20,6 +20,8 @@ pub struct Container {
     pub intact: bool,
     pub note: String,
     pub config: Option<VideoConfig>,
+    /// From the MP4 movie header (mvhd), when present.
+    pub duration_s: Option<f64>,
 }
 
 /// Checks a candidate MP4 at `start` (limited to `limit`).
@@ -35,6 +37,7 @@ pub fn check_mp4(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
         intact: false,
         note: String::new(),
         config: None,
+        duration_s: None,
     };
     if w.open_ended {
         c.note = "box chain runs past the readable area or mdat has size 0 (incomplete recording)"
@@ -51,6 +54,7 @@ pub fn check_mp4(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
         return Ok(Some(c));
     }
     let data = src.read_vec(moov.offset + 8, (moov.size - 8) as usize)?;
+    c.duration_s = mvhd_duration(&data);
     let tracks = mp4::parse_moov(&data);
     let mut checked = 0usize;
     let mut bad = 0usize;
@@ -91,6 +95,37 @@ pub fn check_mp4(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
         );
     }
     Ok(Some(c))
+}
+
+/// Duration in seconds from the `mvhd` box at the start of a moov payload
+/// (ISO/IEC 14496-12, 8.2.2: version 0 has 32-bit, version 1 64-bit fields).
+fn mvhd_duration(moov: &[u8]) -> Option<f64> {
+    let mut p = 0usize;
+    while p + 8 <= moov.len() {
+        let size = u32::from_be_bytes(moov[p..p + 4].try_into().ok()?) as usize;
+        if size < 8 || p + size > moov.len() {
+            return None;
+        }
+        if &moov[p + 4..p + 8] == b"mvhd" {
+            let b = &moov[p + 8..p + size];
+            let (ts, dur) = if b.first() == Some(&1) && b.len() >= 32 {
+                (
+                    u32::from_be_bytes(b[20..24].try_into().ok()?) as u64,
+                    u64::from_be_bytes(b[24..32].try_into().ok()?),
+                )
+            } else if b.len() >= 20 {
+                (
+                    u32::from_be_bytes(b[12..16].try_into().ok()?) as u64,
+                    u32::from_be_bytes(b[16..20].try_into().ok()?) as u64,
+                )
+            } else {
+                return None;
+            };
+            return (ts > 0).then(|| dur as f64 / ts as f64);
+        }
+        p += size;
+    }
+    None
 }
 
 fn is_chunk_id(id: &[u8]) -> bool {
@@ -170,6 +205,7 @@ pub fn check_avi(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
             "RIFF chunk chain broken (overwritten or fragmented)".into()
         },
         config: None,
+        duration_s: None,
     }))
 }
 

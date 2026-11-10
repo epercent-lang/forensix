@@ -803,7 +803,12 @@ impl<'a> Carver<'a> {
             Some(h) => {
                 let base = h.name.rsplit('/').next().unwrap_or("");
                 let stem = base.rsplit_once('.').map(|(a, _)| a).unwrap_or(base);
-                format!("stream_{id:05}_{}", sanitize(stem))
+                let clean = sanitize(stem);
+                if clean.chars().any(|c| c.is_alphanumeric()) {
+                    format!("stream_{id:05}_{clean}")
+                } else {
+                    format!("stream_{id:05}_{:012x}", s.start)
+                }
             }
             None => format!("stream_{id:05}_{:012x}", s.start),
         };

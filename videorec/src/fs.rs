@@ -216,6 +216,24 @@ impl<'a> Fat32<'a> {
                         break 'dir;
                     }
                     let attr = e[11];
+                    // Junk (a deleted directory's later clusters, or data
+                    // that only looks like one) ends the walk of that
+                    // directory; in a live directory it is skipped.
+                    let plausible = if attr == 0x0F {
+                        e[12] == 0
+                            && e[26] == 0
+                            && e[27] == 0
+                            && (e[0] == 0xE5 || e[0] & 0x1F <= 20)
+                    } else {
+                        plausible_83(e)
+                    };
+                    if !plausible {
+                        lfn.clear();
+                        if in_deleted {
+                            break 'dir;
+                        }
+                        continue;
+                    }
                     if attr == 0x0F {
                         let mut chars = [0u16; 13];
                         for (k, off) in [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30]
@@ -311,6 +329,17 @@ fn take_lfn(lfn: &mut Vec<(u8, [u16; 13])>) -> Option<String> {
     lfn.clear();
     let s = String::from_utf16_lossy(&units);
     (!s.is_empty()).then_some(s)
+}
+
+/// A FAT 8.3 directory entry as Microsoft's FAT specification allows it:
+/// printable name bytes without the forbidden characters, and no attribute
+/// bits above 0x3F.
+fn plausible_83(e: &[u8]) -> bool {
+    if e[11] & 0xC0 != 0 {
+        return false;
+    }
+    let ok = |c: u8| c >= 0x20 && c != 0x7F && !b"\"*+,/:;<=>?[\\]|".contains(&c);
+    (e[0] == 0xE5 || e[0] == 0x05 || (ok(e[0]) && e[0] != b' ')) && e[1..11].iter().all(|&c| ok(c))
 }
 
 fn short_name(e: &[u8], deleted: bool) -> String {
