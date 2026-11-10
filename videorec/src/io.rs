@@ -241,6 +241,17 @@ pub fn disk_of_letter(_letter: char) -> Option<u32> {
     None
 }
 
+/// Free bytes for the caller on the volume holding `path`.
+#[cfg(windows)]
+pub fn free_space(path: &Path) -> Option<u64> {
+    win::free_space(path)
+}
+
+#[cfg(not(windows))]
+pub fn free_space(_path: &Path) -> Option<u64> {
+    None
+}
+
 /// Disk number from `\\.\PhysicalDriveN`.
 pub fn device_number(path: &Path) -> Option<u32> {
     let s = path.to_string_lossy().to_ascii_lowercase();
@@ -265,6 +276,12 @@ mod win {
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
+        fn GetDiskFreeSpaceExW(
+            dir: *const u16,
+            avail: *mut u64,
+            total: *mut u64,
+            free: *mut u64,
+        ) -> i32;
         fn DeviceIoControl(
             h: *mut c_void,
             code: u32,
@@ -330,6 +347,15 @@ mod win {
         let mut out = [0u8; 12];
         ioctl(f, IOCTL_STORAGE_GET_DEVICE_NUMBER, &[], &mut out)?;
         Some(u32::from_le_bytes(out[4..8].try_into().unwrap()))
+    }
+
+    pub fn free_space(path: &std::path::Path) -> Option<u64> {
+        use std::os::windows::ffi::OsStrExt;
+        let w: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let (mut a, mut t, mut f) = (0u64, 0u64, 0u64);
+        // SAFETY: NUL-terminated path, valid out pointers.
+        let ok = unsafe { GetDiskFreeSpaceExW(w.as_ptr(), &mut a, &mut t, &mut f) };
+        (ok != 0).then_some(a)
     }
 
     pub fn disk_of_letter(letter: char) -> Option<u32> {

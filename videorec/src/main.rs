@@ -498,6 +498,14 @@ fn recover(
     let src = Source::open(image)?;
     guard_output(image, out)?;
     std::fs::create_dir_all(out).with_context(|| format!("cannot create {}", out.display()))?;
+    // A report left by an earlier run into the same folder would describe
+    // that run if this one does not finish: keep it under another name.
+    for f in ["report.json", "report.csv", "videorec_error.txt"] {
+        let p = out.join(f);
+        if p.exists() {
+            std::fs::rename(&p, out.join(format!("previous_{f}"))).ok();
+        }
+    }
     progress::set_stop_file(out.join(".stop"));
     let mut items: Vec<Recovered> = vec![];
     let mut configs = vec![];
@@ -1071,7 +1079,11 @@ fn main() -> Result<()> {
         return gui::run(0, true);
     }
     let cli = Cli::parse();
-    match cli.cmd {
+    let err_out = match &cli.cmd {
+        Cmd::Export { out, .. } | Cmd::Recover { out, .. } => Some(out.clone()),
+        _ => None,
+    };
+    let res = match cli.cmd {
         Cmd::Export {
             session,
             out,
@@ -1183,5 +1195,15 @@ fn main() -> Result<()> {
             no_containers,
             no_streams,
         ),
+    };
+    if let (Err(e), Some(out)) = (&res, &err_out) {
+        // The progress line ends with '\r': start the message on a new line,
+        // and leave it next to the results for later.
+        eprintln!();
+        let msg = format!("{e:#}");
+        if out.is_dir() {
+            std::fs::write(out.join("videorec_error.txt"), format!("{msg}\n")).ok();
+        }
     }
+    res
 }

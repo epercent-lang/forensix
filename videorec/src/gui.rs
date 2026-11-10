@@ -411,6 +411,7 @@ fn api(req: &Req, job: &Shared) -> Result<Value> {
             )
         }
         ("POST", "/api/copy") => copy(&body(req)?),
+        ("GET", "/api/space") => Ok(json!({"free": free_space(&req.q("path"))})),
         ("GET", "/api/disks") => Ok(json!({"disks": crate::io::list_disks().iter().map(|d| {
             let mut v = serde_json::to_value(d).unwrap_or_default();
             v["label"] = disk_label(d).into();
@@ -481,6 +482,15 @@ fn ls(path: &str) -> Result<Value> {
     Ok(
         json!({"path": p.to_string_lossy(), "parent": parent.unwrap_or_default(), "entries": entries}),
     )
+}
+
+/// Free bytes on the volume holding `path` (or its nearest existing parent).
+fn free_space(path: &str) -> Option<u64> {
+    let mut p = Path::new(path);
+    while !p.exists() {
+        p = p.parent()?;
+    }
+    crate::io::free_space(p)
 }
 
 fn mkdir(parent: &str, name: &str, source: &str) -> Result<Value> {
@@ -635,7 +645,13 @@ fn pump(mut p: Box<dyn Read + Send>, job: &Shared) {
     let mut cur: Vec<u8> = vec![];
     loop {
         let n = match p.read(&mut buf) {
-            Ok(0) | Err(_) => break,
+            Ok(0) | Err(_) => {
+                let line = String::from_utf8_lossy(&cur).trim().to_string();
+                if !line.is_empty() && !line.starts_with('[') {
+                    job.lock().unwrap().lines.push(line);
+                }
+                break;
+            }
             Ok(n) => n,
         };
         for &c in &buf[..n] {
@@ -646,6 +662,17 @@ fn pump(mut p: Box<dyn Read + Send>, job: &Shared) {
                     continue;
                 }
                 let mut j = job.lock().unwrap();
+                // A message printed right after a progress line (which has no
+                // newline) ends up on the same line: split it off.
+                let (line, extra) = match line.find("Error:") {
+                    Some(k) if k > 0 && line.starts_with('[') => {
+                        (line[..k].trim().to_string(), Some(line[k..].to_string()))
+                    }
+                    _ => (line, None),
+                };
+                if let Some(x) = extra {
+                    j.lines.push(x);
+                }
                 if line.starts_with('[') {
                     j.progress = line;
                 } else {

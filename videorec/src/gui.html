@@ -233,6 +233,7 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
       </div>
       <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">저장 위치</span>
         <span class="row"><input type="text" id="outDir" class="mono"><button class="b" data-browse="outDir">찾아보기</button></span></label>
+      <div id="outSpace" class="small muted"></div>
       <div id="sameDisk" class="alert" hidden>원본 이미지와 같은 디스크입니다. 이미지 파일이라 원본 장치에는 영향이 없지만, 공간이 충분한지 확인하세요.</div>
       <label class="opt"><input type="checkbox" id="saveSes" checked><span>스캔 세션 저장 (다음에 다시 스캔 없이 내보내기)</span></label>
       <div class="row">
@@ -247,6 +248,7 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
       <h2 id="jobTitle">대기 중</h2>
       <div class="bar"><div id="jobBar"></div></div>
       <div id="jobTiming" class="small muted mono"></div>
+      <div id="jobErr" class="err" hidden></div>
       <pre class="log" id="jobLog"></pre>
       <button class="p" id="btnResults" data-go="3" hidden>결과 보기</button>
     </div>
@@ -504,7 +506,7 @@ $('btnInfo').onclick = async () => {
     $('iDetail').textContent = d; $('infoCard').hidden = false;
     const stamp = 'gui_' + new Date().toISOString().slice(0,16).replace(/[-:T]/g, '');
     if (!$('outDir').value) $('outDir').value = j.out_base ? join(j.out_base, stamp) : join(p.replace(/[\\/][^\\/]*$/, ''), 'videorec_out' + sep(p) + stamp);
-    checkSame(); passText();
+    checkSame(); passText(); checkSpace();
   } catch (e) { $('infoErr').textContent = e.message; $('infoErr').hidden = false; }
   $('btnInfo').disabled = false; $('btnInfo').textContent = '확인';
 };
@@ -518,7 +520,28 @@ function checkSame() {
     : '원본 이미지와 같은 디스크입니다. 이미지 파일이라 원본 장치에는 영향이 없지만, 공간이 충분한지 확인하세요.';
   $('sameDisk').hidden = !(onDisk || (a && a == b));
 }
-$('outDir').oninput = checkSame;
+$('outDir').oninput = () => { checkSame(); checkSpace(); };
+let spaceT = null;
+function scanGB() {
+  const size = (st.info?.size || 0) / 1e9, a = +$('rgA').value || 0, b = $('rgB').value.trim() ? Math.min(+$('rgB').value, size) : size;
+  return Math.max(0, b - a);
+}
+function checkSpace() {
+  clearTimeout(spaceT);
+  spaceT = setTimeout(async () => {
+    const out = $('outDir').value.trim(); st.free = null;
+    if (!out) { $('outSpace').textContent = ''; return; }
+    let j; try { j = await api('/api/space?path=' + encodeURIComponent(out)); } catch { return; }
+    st.free = j.free;
+    if (j.free == null) { $('outSpace').textContent = ''; return; }
+    const need = scanGB();
+    let t = `저장 위치의 남은 공간: ${gb(j.free)}`;
+    const low = need > 0 && j.free < need * 1e9;
+    if (low) t += ` · 검사할 ${need.toFixed(0)} GB보다 적습니다. 찾은 영상은 원본과 비슷한 크기로 저장되므로 도중에 공간이 모자라 멈출 수 있습니다.`;
+    $('outSpace').textContent = t; $('outSpace').className = low ? 'alert' : 'small muted';
+  }, 300);
+}
+['rgA', 'rgB'].forEach(id => $(id).addEventListener('input', checkSpace));
 function passes() {
   const p = [];
   if ($('tCont').checked) p.push('files');
@@ -540,6 +563,7 @@ $('btnScan').onclick = async () => {
   const img = $('imgPath').value.trim(), out = $('outDir').value.trim();
   $('scanErr').hidden = true;
   if (!img || !out) { $('scanErr').textContent = '원본과 저장 위치를 먼저 정하세요.'; $('scanErr').hidden = false; return; }
+  if (st.free != null && st.free < 1e9) { $('scanErr').textContent = `저장 위치의 남은 공간이 ${gb(st.free)}뿐입니다. 공간을 비우거나 다른 드라이브를 고르세요.`; $('scanErr').hidden = false; return; }
   if (st.info?.device && (st.info.disk_letters || []).includes(drive(out))) { $('scanErr').textContent = '저장 위치가 복구할 디스크 안에 있습니다. 다른 디스크를 고르세요.'; $('scanErr').hidden = false; return; }
   const a = ['recover', img, '-o', out, '--scope', document.querySelector('input[name=scope]:checked').value,
     '--format', $('fmt').value, '--group', $('grp').value];
@@ -587,6 +611,13 @@ async function poll() {
   } else if (j.elapsed_s != null) timing = `지난 시간 ${dur(j.elapsed_s)}`;
   $('jobTiming').textContent = timing;
   $('jobLog').textContent = j.lines.join('\n'); $('jobLog').scrollTop = 1e9;
+  const errLine = !j.running && j.exit != null && j.exit != 0 ? ([...j.lines].reverse().find(l => /^Error:/.test(l)) || [...j.lines].reverse().find(l => !/^\s*(\d+:|at )/.test(l) && /error|cannot|failed/i.test(l))) : null;
+  $('jobErr').hidden = !errLine && !(!j.running && j.exit != null && j.exit != 0);
+  if (!$('jobErr').hidden) {
+    const full = /os error 112|not enough space|No space left|StorageFull|디스크 공간이 부족/i.test(errLine || '');
+    $('jobErr').textContent = full ? '저장 공간이 부족해서 멈췄습니다. 지금까지 찾은 영상 파일은 저장 폴더에 남아 있습니다. 공간을 비우거나 다른 드라이브를 골라 다시 시작하세요.'
+      : errLine ? '오류로 멈췄습니다: ' + errLine : `오류로 멈췄습니다 (코드 ${j.exit}). 저장 폴더의 videorec_error.txt에 자세한 내용이 있습니다.`;
+  }
   $('btnStop').hidden = !j.running; $('btnScan').disabled = j.running;
   if (!j.running) $('btnStop').textContent = '멈추기 (찾은 것까지 저장)';
   $('btnResults').hidden = !(j.exit == 0 && j.kind == 'recover');
