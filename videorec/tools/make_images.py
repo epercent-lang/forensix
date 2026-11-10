@@ -39,6 +39,11 @@ def make_videos(vdir):
     run(*common, *src(5, 770), *x264, "-c:a", "pcm_s16le", f"{vdir}/D.avi")
     run(*common, *src(10, 880), *x264, *aac, f"{vdir}/E_full.mp4")
     run(*common, *src(3, 990), *x264, *aac, f"{vdir}/ref.mp4")
+    # Motion-JPEG recording (many CCTV DVRs) and one still photo.
+    run(*common, "-f", "lavfi", "-i", "testsrc2=size=640x480:rate=10:duration=6,hue=h=200",
+        "-c:v", "mjpeg", "-q:v", "5", "-pix_fmt", "yuvj420p", f"{vdir}/M.avi")
+    run(*common, "-f", "lavfi", "-i", "testsrc2=size=1024x768:rate=1:duration=1",
+        "-frames:v", "1", "-pix_fmt", "yuvj420p", f"{vdir}/photo.jpg")
     # E.mp4: recording cut by power loss — everything from moov on is missing.
     data = open(f"{vdir}/E_full.mp4", "rb").read()
     i = 0
@@ -437,6 +442,17 @@ def main():
     # Pass 1 keeps roughly seconds 12.5-20 of 20; pass 2 is complete.
     truth["jdr_ring"] = {"expect": [f"P{p}_CH{c}.h264" for p in (1, 2) for c in (0, 1, 2)], "live": [],
                          "min_share": {f"P1_CH{c}.h264": 0.3 for c in (0, 1, 2)}}
+
+    # 9. Raw Motion-JPEG frames (AVI header lost) between random data, next
+    #    to a single still photo that must not become a video.
+    img = os.path.join(work, "mjpeg_raw.img")
+    with open(img, "wb") as f:
+        f.write(os.urandom(2 * MB))
+        f.write(open(v("photo.jpg"), "rb").read())
+        f.write(os.urandom(MB))
+        f.write(open(v("M.avi"), "rb").read()[8192:])
+        f.write(os.urandom(MB))
+    truth["mjpeg_raw"] = {"expect": ["M.avi"], "live": [], "min_share": {"M.avi": 0.9}}
 
     json.dump(truth, open(os.path.join(work, "truth.json"), "w"), indent=2)
     print("images written to", work)

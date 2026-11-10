@@ -6,12 +6,15 @@
 //! 2. container carving (intact MP4/MOV/AVI),
 //! 3. frame-level carving of H.264/H.265 streams in what is left.
 
+mod avi;
 mod codec;
 mod container;
 mod fs;
 mod io;
 mod jdr;
+mod mjpeg;
 mod mp4;
+mod progress;
 mod ranges;
 mod report;
 mod stream;
@@ -61,6 +64,24 @@ enum Vendor {
     Jdr,
     /// Generic carving only.
     None,
+}
+
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum FormatArg {
+    Mp4,
+    Avi,
+}
+
+#[derive(Clone, Copy, ValueEnum, PartialEq)]
+enum GroupArg {
+    /// All files in the output folder.
+    None,
+    /// CAM<n>/ sub-folders.
+    Camera,
+    /// YYYY-MM-DD/ sub-folders.
+    Date,
+    /// CAM<n>/YYYY-MM-DD/ sub-folders.
+    CameraDate,
 }
 
 #[derive(Subcommand)]
@@ -117,6 +138,25 @@ enum Cmd {
         /// (by default they are kept, marked partial, with borrowed SPS/PPS).
         #[arg(long)]
         jdr_drop_without_key: bool,
+        /// Container for clips rebuilt from recorder formats.
+        #[arg(long, value_enum, default_value_t = FormatArg::Mp4)]
+        format: FormatArg,
+        /// Sub-folders for clips rebuilt from recorder formats.
+        #[arg(long, value_enum, default_value_t = GroupArg::None)]
+        group: GroupArg,
+        /// Keep only recordings from this time on: YYYY-MM-DD or "YYYY-MM-DD hh:mm[:ss]"
+        /// (recorder clock; applies to recorder formats with timestamps).
+        #[arg(long)]
+        from: Option<String>,
+        /// Keep only recordings up to this time (same format as --from).
+        #[arg(long)]
+        to: Option<String>,
+        /// Keep only these cameras, e.g. 1,3 or 1-2 (camera = recorder channel + 1).
+        #[arg(long)]
+        camera: Option<String>,
+        /// No progress line.
+        #[arg(long, short)]
+        quiet: bool,
         /// Largest gap (KiB) between NAL runs still treated as one stream
         /// (interleaved audio, metadata).
         #[arg(long, default_value_t = 1024)]
@@ -134,6 +174,16 @@ enum Cmd {
         #[arg(long)]
         no_streams: bool,
     },
+}
+
+/// Output and filter options for clips rebuilt from recorder formats.
+struct ClipExtra {
+    format: FormatArg,
+    group: GroupArg,
+    from: Option<String>,
+    to: Option<String>,
+    camera: Option<String>,
+    quiet: bool,
 }
 
 fn volumes(src: &Source) -> Result<Vec<Volume>> {
@@ -215,6 +265,7 @@ fn recover(
     stats_only: bool,
     jdr_min_frames: usize,
     jdr_drop_without_key: bool,
+    clip_extra: ClipExtra,
     max_gap_kib: u64,
     min_frames: usize,
     keep_leading: bool,
@@ -391,23 +442,58 @@ fn recover(
     let mut jdr_chunks_total = 0usize;
     let mut jdr_older = 0usize;
     let mut jdr_stats = jdr::Stats::new();
+    let parse_t = |v: &Option<String>, end: bool| -> Result<Option<i64>> {
+        match v {
+            None => Ok(None),
+            Some(t) => jdr::parse_time(t, end).map(Some).with_context(|| {
+                format!("bad time {t:?}; use YYYY-MM-DD or \"YYYY-MM-DD hh:mm:ss\"")
+            }),
+        }
+    };
+    let clip_opts = jdr::ClipOpts {
+        max_gap_ms,
+        min_frames: jdr_min_frames,
+        keep_without_key: !jdr_drop_without_key,
+        dry_run: stats_only,
+        format: match clip_extra.format {
+            FormatArg::Mp4 => jdr::Format::Mp4,
+            FormatArg::Avi => jdr::Format::Avi,
+        },
+        group: match clip_extra.group {
+            GroupArg::None => jdr::Group::None,
+            GroupArg::Camera => jdr::Group::Camera,
+            GroupArg::Date => jdr::Group::Date,
+            GroupArg::CameraDate => jdr::Group::CameraDate,
+        },
+        from_ms: parse_t(&clip_extra.from, false)?,
+        to_ms: parse_t(&clip_extra.to, true)?,
+        cameras: match &clip_extra.camera {
+            None => vec![],
+            Some(c) => jdr::parse_cameras(c)
+                .with_context(|| format!("bad camera list {c:?}; use e.g. 1,3 or 1-2"))?,
+        },
+    };
     let (no_containers, no_streams) = (no_containers || stats_only, no_streams || stats_only);
     for &(a, b) in &jdr_vols {
         let mut chunks = vec![];
         let mut cov = Ranges::new();
-        for (s, e) in covered.gaps(a, b) {
-            jdr::scan(&src, s, e, &mut chunks, &mut cov)?;
+        let gaps = covered.gaps(a, b);
+        let mut prog = progress::Progress::new(
+            "scan",
+            gaps.iter().map(|g| g.1 - g.0).sum(),
+            clip_extra.quiet,
+        );
+        for (s, e) in gaps {
+            jdr::scan(&src, s, e, &mut chunks, &mut cov, &mut prog)?;
         }
+        prog.finish();
         jdr_chunks_total += chunks.len();
         let (mut got, d) = jdr::write_clips(
             &src,
             &chunks,
             out,
             items.len() + 1,
-            max_gap_ms,
-            jdr_min_frames,
-            !jdr_drop_without_key,
-            stats_only,
+            &clip_opts,
             &mut jdr_stats,
         )?;
         jdr_discarded += d;
@@ -521,6 +607,33 @@ fn recover(
         items.extend(carver.results);
     }
 
+    // Stage 3b: Motion-JPEG runs in what is still not covered.
+    let mut mjpeg_runs_small = 0;
+    if !no_streams {
+        let mut cov = covered.clone();
+        for it in &items {
+            cov.add(it.source_start, it.source_end);
+        }
+        cov.normalize();
+        let mut jpegs = vec![];
+        for &(a, b) in &regions {
+            for (s, e) in cov.gaps(a, b) {
+                mjpeg::scan(&src, s, e, &mut jpegs)?;
+            }
+        }
+        let (got, small) = mjpeg::write_runs(
+            &src,
+            &jpegs,
+            out,
+            items.len() + 1,
+            max_gap_kib * 1024,
+            min_frames,
+            fps,
+        )?;
+        mjpeg_runs_small = small;
+        items.extend(got);
+    }
+
     live_map.sort_unstable_by_key(|x| x.0);
     for it in items.iter_mut() {
         let i = live_map.partition_point(|x| x.1 <= it.source_start);
@@ -560,6 +673,7 @@ fn recover(
         damaged_containers.into(),
     );
     summary.insert("small_fragments_discarded".into(), discarded.into());
+    summary.insert("jpeg_runs_below_min_frames".into(), mjpeg_runs_small.into());
     summary.insert(
         "video_chains_without_parameter_sets".into(),
         chains_without_params.into(),
@@ -695,6 +809,12 @@ fn main() -> Result<()> {
             stats_only,
             jdr_min_frames,
             jdr_drop_without_key,
+            format,
+            group,
+            from,
+            to,
+            camera,
+            quiet,
             max_gap_kib,
             min_frames,
             keep_leading,
@@ -713,6 +833,14 @@ fn main() -> Result<()> {
             stats_only,
             jdr_min_frames,
             jdr_drop_without_key,
+            ClipExtra {
+                format,
+                group,
+                from,
+                to,
+                camera,
+                quiet,
+            },
             max_gap_kib,
             min_frames,
             keep_leading,

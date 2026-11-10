@@ -29,6 +29,17 @@ cargo build --release
 ./target/release/videorec recover card.img -o out/ --scope all
 ```
 
+### 거르기, 폴더 정리, AVI 출력
+
+```bash
+# 2026-11-01 08시~10시, 카메라 1과 3만, AVI로, 카메라/날짜 폴더에
+videorec recover card.img -o out/ --from "2026-11-01 08:00" --to "2026-11-01 10:00" --camera 1,3 --format avi --group camera-date
+```
+
+`--from/--to/--camera`는 녹화기 시각과 채널이 기록된 형식(현재 G-NET `.jdr`)에만 적용됩니다. 카메라 번호는 녹화기 채널 + 1입니다(CH00 = CAM1).
+AVI는 OpenDML 형식이라 1GB가 넘는 클립도 저장됩니다. AVI는 고정 프레임 속도라, 녹화 시각 간격은 MP4에서만 그대로 유지됩니다.
+Motion-JPEG 프레임이 이어져 있으면 MJPEG AVI로 복구합니다(`carved_mjpeg`). 프레임 속도를 모르면 10fps로 가정합니다(`--fps`로 지정).
+
 ### G-NET 블랙박스 (`.jdr` 파일)
 
 카드에 `.jdr` 파일이 있으면 자동으로 G-NET 형식 처리가 켜집니다 (`--vendor jdr`로 강제, `--vendor none`으로 끔).
@@ -53,7 +64,7 @@ Windows용 빌드: `cargo build --release --target x86_64-pc-windows-gnu` (mingw
 ## 테스트
 
 ```bash
-python3 tools/make_images.py /tmp/work   # 합성 SD카드 이미지 8종 생성 (ffmpeg, dosfstools, mtools, exfatprogs 필요)
+python3 tools/make_images.py /tmp/work   # 합성 SD카드 이미지 9종 생성 (ffmpeg, dosfstools, mtools, exfatprogs 필요)
 python3 tools/evaluate.py /tmp/work      # 복구 후 원본과 프레임 단위로 비교
 cargo test
 ```
@@ -71,6 +82,7 @@ cargo test
 | raw_noFS | 파일시스템 없음, 파일 헤더 손실 (H.264 + H.265) | 210/240, 150/180 프레임 |
 | avi_overwritten | AVI 헤더와 앞부분 덮어써짐 | 119/150 프레임 |
 | back_to_back | 파일 3개가 빈틈없이 이어서 기록됨 | 180/180, 180/180, 240/240 프레임 |
+| mjpeg_raw | AVI 헤더 없는 MJPEG 프레임 + 사진 1장 | 59/60 프레임 (잘린 첫 프레임 제외), 사진은 영상으로 만들지 않음 |
 | jdr_ring | G-NET식 3채널 링 파일 4개, 2바퀴째가 GOP 중간까지 덮어씀 | 2바퀴째 3채널 375/375, 1바퀴째 남은 부분 각 210/600 원본 동일 + 키프레임 앞 15프레임은 손상 상태로 저장 |
 
 - 무작위 데이터 3GB(+SPS/PPS 후보 존재)에서 가짜 스트림 0개, 스캔 속도 약 400MB/s (이 컨테이너 기준)

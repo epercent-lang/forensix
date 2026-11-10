@@ -16,6 +16,7 @@
 //! current pass has not reached. Chunks are therefore scanned across the
 //! whole volume, regardless of files, and re-assembled per channel by time.
 
+use crate::avi::AviWriter;
 use crate::codec::{self, Codec};
 use crate::io::{Source, le16, le32};
 use crate::mp4::{self, Mp4Writer, VideoConfig};
@@ -171,6 +172,7 @@ pub fn scan(
     end: u64,
     chunks: &mut Vec<Chunk>,
     covered: &mut Ranges,
+    progress: &mut crate::progress::Progress,
 ) -> Result<()> {
     const CHUNK: usize = 8 << 20;
     let mut pos = start;
@@ -204,7 +206,9 @@ pub fn scan(
             }
             i += 1;
         }
-        pos = next.max(pos + 1);
+        let np = next.max(pos + 1).min(end);
+        progress.add(np - pos);
+        pos = np;
     }
     Ok(())
 }
@@ -250,18 +254,97 @@ fn month(t_ms: i64) -> String {
     format_time(t_ms)[..7].to_string()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Mp4,
+    Avi,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Group {
+    None,
+    Camera,
+    Date,
+    CameraDate,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClipOpts {
+    pub max_gap_ms: i64,
+    pub min_frames: usize,
+    pub keep_without_key: bool,
+    pub dry_run: bool,
+    pub format: Format,
+    pub group: Group,
+    /// Recorder-time window, milliseconds since 1970 (inclusive).
+    pub from_ms: Option<i64>,
+    pub to_ms: Option<i64>,
+    /// Camera numbers (channel + 1) to keep; empty keeps all.
+    pub cameras: Vec<u32>,
+}
+
+/// Parses `YYYY-MM-DD` or `YYYY-MM-DD hh:mm[:ss]` (also with `T`). A date
+/// alone means its start, or its end when `end` is set.
+pub fn parse_time(s: &str, end: bool) -> Option<i64> {
+    let s = s.trim().replace('T', " ");
+    let (d, t) = s.split_once(' ').unwrap_or((&s, ""));
+    let mut dp = d.split('-').map(|x| x.parse::<i64>());
+    let (y, m, dd) = (dp.next()?.ok()?, dp.next()?.ok()?, dp.next()?.ok()?);
+    if dp.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&dd) {
+        return None;
+    }
+    let day = days_from_civil(y, m, dd) * 86_400_000;
+    if t.is_empty() {
+        return Some(if end { day + 86_399_999 } else { day });
+    }
+    let tp: Vec<i64> = t
+        .split(':')
+        .map(|x| x.parse().ok())
+        .collect::<Option<_>>()?;
+    let (h, mi, sec) = match tp[..] {
+        [h, mi] => (h, mi, None),
+        [h, mi, sec] => (h, mi, Some(sec)),
+        _ => return None,
+    };
+    if h > 23 || mi > 59 || sec.is_some_and(|x| x > 59) {
+        return None;
+    }
+    let base = day + (h * 60 + mi) * 60_000 + sec.unwrap_or(0) * 1000;
+    Some(match (end, sec) {
+        (true, None) => base + 59_999,
+        (true, Some(_)) => base + 999,
+        _ => base,
+    })
+}
+
+/// Parses camera lists like `1,3,5-8`.
+pub fn parse_cameras(s: &str) -> Option<Vec<u32>> {
+    let mut v = vec![];
+    for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.split_once('-') {
+            Some((a, b)) => {
+                let (a, b): (u32, u32) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
+                if a > b {
+                    return None;
+                }
+                v.extend(a..=b);
+            }
+            None => v.push(part.parse().ok()?),
+        }
+    }
+    Some(v)
+}
+
 pub fn write_clips(
     src: &Source,
     chunks: &[Chunk],
     out: &Path,
     first_id: usize,
-    max_gap_ms: i64,
-    min_frames: usize,
-    keep_without_key: bool,
-    dry_run: bool,
+    o: &ClipOpts,
     stats: &mut Stats,
 ) -> Result<(Vec<Recovered>, usize)> {
+    let (max_gap_ms, min_frames, keep_without_key, dry_run) =
+        (o.max_gap_ms, o.min_frames, o.keep_without_key, o.dry_run);
     let mut items = vec![];
     let mut discarded = 0;
     let mut channels: Vec<u8> = chunks.iter().map(|c| c.channel).collect();
@@ -272,6 +355,11 @@ pub fn write_clips(
         let mut v: Vec<&Chunk> = chunks
             .iter()
             .filter(|c| c.channel == ch && matches!(c.kind, Kind::Key | Kind::Frame))
+            .filter(|c| {
+                o.from_ms.is_none_or(|f| c.t_ms >= f)
+                    && o.to_ms.is_none_or(|t| c.t_ms <= t)
+                    && (o.cameras.is_empty() || o.cameras.contains(&(c.channel as u32 + 1)))
+            })
             .collect();
         v.sort_by_key(|c| (c.t_ms, c.off));
         v.dedup_by_key(|c| (c.t_ms, c.size));
@@ -355,7 +443,7 @@ pub fn write_clips(
             if dry_run {
                 continue;
             }
-            match write_one(src, seg, out, id, params, if damaged { k } else { 0 })? {
+            match write_one(src, seg, out, id, params, if damaged { k } else { 0 }, o)? {
                 Some(r) => {
                     items.push(r);
                     id += 1;
@@ -387,6 +475,7 @@ fn write_one(
     params: (Vec<u8>, Vec<u8>),
     // Number of leading frames with no key frame before them.
     lead: usize,
+    o: &ClipOpts,
 ) -> Result<Option<Recovered>> {
     let no_key = lead > 0;
     let first = seg[0];
@@ -412,27 +501,72 @@ fn write_one(
         return Ok(None);
     };
     let start = format_time(first.t_ms);
+    let cam = format!("CAM{}", first.channel as u32 + 1);
+    let sub = match o.group {
+        Group::None => String::new(),
+        Group::Camera => format!("{cam}/"),
+        Group::Date => format!("{}/", &start[..10]),
+        Group::CameraDate => format!("{cam}/{}/", &start[..10]),
+    };
+    std::fs::create_dir_all(out.join(&sub))?;
     let stem = format!(
-        "jdr_{id:05}_CH{:02}_{}",
-        first.channel,
+        "jdr_{id:05}_{cam}_{}",
         start.replace([':', '-'], "").replace(['T', '.'], "_")
     );
-    let path = out.join(format!("{stem}.mp4"));
-    let mut w = Mp4Writer::create(&path)?;
-    let nominal = 1000 / first.fps().max(1);
+    let ext = match o.format {
+        Format::Mp4 => "mp4",
+        Format::Avi => "avi",
+    };
+    let rel = format!("{sub}{stem}.{ext}");
+    let path = out.join(&rel);
+    let fps = first.fps().max(1);
+    let nominal = 1000 / fps;
     let mut durations = Vec::with_capacity(seg.len());
     let mut pieces = 1;
     let mut keys = 0;
+    enum W {
+        Mp4(Mp4Writer),
+        Avi(AviWriter),
+    }
+    let mut w = match o.format {
+        Format::Mp4 => W::Mp4(Mp4Writer::create(&path)?),
+        Format::Avi => W::Avi(AviWriter::create(
+            &path,
+            *b"H264",
+            first.width(),
+            first.height(),
+            fps,
+            1,
+        )?),
+    };
     for (k, c) in seg.iter().enumerate() {
         let p = src.read_vec(c.off + HEADER as u64, c.size as usize)?;
-        let mut data = vec![];
-        for n in split_nals(&p) {
-            data.extend_from_slice(&(n.len() as u32).to_be_bytes());
-            data.extend_from_slice(n);
-        }
         let key = c.kind == Kind::Key;
         keys += key as usize;
-        w.add_sample(&data, key)?;
+        match &mut w {
+            W::Mp4(w) => {
+                let mut data = vec![];
+                for n in split_nals(&p) {
+                    data.extend_from_slice(&(n.len() as u32).to_be_bytes());
+                    data.extend_from_slice(n);
+                }
+                w.add_sample(&data, key)?;
+            }
+            W::Avi(w) => {
+                if k == 0 && lead > 0 {
+                    // Parameter sets in band, so the stream can be decoded.
+                    let mut data = vec![];
+                    for n in cfg.sps.iter().chain(&cfg.pps) {
+                        data.extend_from_slice(&[0, 0, 0, 1]);
+                        data.extend_from_slice(n);
+                    }
+                    data.extend_from_slice(&p);
+                    w.add_frame(&data, key)?;
+                } else {
+                    w.add_frame(&p, key)?;
+                }
+            }
+        }
         let d = match seg.get(k + 1) {
             Some(nx) => (nx.t_ms - c.t_ms).clamp(1, 10_000) as u32,
             None => nominal,
@@ -442,13 +576,16 @@ fn write_one(
             pieces += 1;
         }
     }
-    w.finish_timed(&entry, 1000, &durations)?;
+    match w {
+        W::Mp4(w) => w.finish_timed(&entry, 1000, &durations)?,
+        W::Avi(w) => w.finish()?,
+    }
     let last = seg[seg.len() - 1];
     let size = std::fs::metadata(&path)?.len();
     Ok(Some(Recovered {
         id,
         kind: "jdr_clip".into(),
-        output: path.file_name().unwrap().to_string_lossy().into(),
+        output: rel,
         sha256: report::sha256_file(&path)?,
         size,
         source_start: first.off,
