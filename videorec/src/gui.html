@@ -60,6 +60,22 @@ tbody tr{cursor:pointer}
 pre.log{margin:0;max-height:220px;overflow:auto;background:#16181D;color:#E6E8EE;border-radius:8px;padding:12px;font-size:12px;white-space:pre-wrap}
 .modal{position:fixed;inset:0;background:rgba(22,24,29,.45);display:flex;align-items:center;justify-content:center;padding:24px}
 .modal .card{width:min(720px,100%);max-height:80vh}
+.modal .card.ex{width:min(1000px,100%);height:min(640px,86vh);max-height:none;display:flex;flex-direction:column;gap:10px}
+.exbar{display:flex;gap:8px;align-items:center}
+.exbar input{flex:1;padding:7px 10px;border:1px solid #D9DCE1;border-radius:6px}
+.exbody{flex:1;min-height:0;display:grid;grid-template-columns:200px 1fr;border:1px solid #E3E6EB;border-radius:8px;overflow:hidden}
+.extree{border-right:1px solid #E3E6EB;overflow:auto;background:#FAFBFC}
+.modal .extree ul{list-style:none;margin:0;padding:0 0 8px;border:0;max-height:none;overflow:visible}
+.extree button{all:unset;box-sizing:border-box;display:block;width:100%;padding:6px 10px;cursor:pointer;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.extree button:hover{background:#EAF0FC}.extree button.on{background:#DCE6FA;font-weight:500}
+.exlist{overflow:auto}
+.exlist table{width:100%;border-collapse:collapse;font-size:13px}
+.exlist th{position:sticky;top:0;background:#fff;text-align:left;font-weight:500;color:#5B616E;padding:7px 10px;border-bottom:1px solid #E3E6EB}
+.exlist td{padding:6px 10px;white-space:nowrap;cursor:default;user-select:none}
+.exlist td:first-child{max-width:420px;overflow:hidden;text-overflow:ellipsis}
+.exlist tr:hover td{background:#F2F6FD}.exlist tr.on td{background:#DCE6FA}
+.exlist tr.dim td{color:#9AA0AA}
+.exfoot{display:flex;gap:8px;align-items:center}
 .modal ul{list-style:none;margin:0;padding:0;overflow:auto;max-height:50vh;border:1px solid #EEF0F4;border-radius:8px}
 .modal li button{all:unset;display:flex;justify-content:space-between;width:100%;box-sizing:border-box;padding:10px 12px;cursor:pointer}
 .modal li button:hover,.modal li button:focus-visible{background:#EAF0FC}
@@ -339,11 +355,25 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
 </main>
 
 <div class="modal" id="browser" hidden role="dialog" aria-modal="true" aria-labelledby="brTitle">
-  <div class="card">
-    <h2 id="brTitle">찾아보기</h2>
-    <div class="row"><button class="b" id="brUp">위로</button><span id="brPath" class="mono small" style="flex:1;word-break:break-all"></span></div>
-    <ul id="brList"></ul>
-    <div class="row"><button class="b" id="brCancel">닫기</button><button class="b" id="brNew" hidden>새 폴더</button><button class="p" id="brPick" style="margin-left:auto">이 폴더 선택</button></div>
+  <div class="card ex">
+    <div class="row" style="justify-content:space-between"><h2 id="brTitle" style="margin:0">찾아보기</h2><button class="b sm" id="brCancel" aria-label="닫기">✕</button></div>
+    <div class="exbar">
+      <button class="b sm" id="brUp" title="위로">↑ 위로</button>
+      <input id="brAddr" class="mono" aria-label="주소" placeholder="경로를 입력하고 Enter">
+      <button class="b sm" id="brNew">＋ 새 폴더</button>
+    </div>
+    <div class="exbody">
+      <nav class="extree" aria-label="드라이브"><div class="small muted" style="padding:6px 10px">내 PC</div><ul id="brDrives"></ul></nav>
+      <div class="exlist">
+        <table><thead><tr><th>이름</th><th>수정한 날짜</th><th>종류</th><th style="text-align:right">크기</th></tr></thead><tbody id="brList"></tbody></table>
+        <div id="brEmpty" class="small muted" style="padding:16px" hidden>비어 있는 폴더입니다.</div>
+      </div>
+    </div>
+    <div class="exfoot">
+      <span class="small muted" style="flex:1;word-break:break-all">선택: <span id="brSel" class="mono"></span></span>
+      <button class="b" id="brCancel2">취소</button>
+      <button class="p" id="brPick">선택</button>
+    </div>
   </div>
 </div>
 
@@ -374,37 +404,69 @@ function show(n) {
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => show(+b.dataset.step));
 document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(+b.dataset.go));
 
-// ---- folder / file browser
-let brTarget = null, brFiles = false, brCur = '';
-async function brOpen(path) {
+// ---- folder / file browser (Explorer-style)
+let brTarget = null, brFiles = false, brCur = '', brPicked = '', brEntries = [];
+const brDate = t => t ? new Date(t * 1000).toLocaleString('ko-KR', {year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}) : '';
+const brKind = e => e.disk ? '물리 디스크' : e.dir ? '파일 폴더' : ((e.name.match(/\.([^.]+)$/) || [])[1] || '').toUpperCase() + ' 파일';
+function brSelect(path) { brPicked = path; $('brSel').textContent = path || '(없음)'; $('brPick').disabled = !path; }
+async function brDrives() {
   try {
-    const j = await api('/api/ls?path=' + encodeURIComponent(path));
-    brCur = j.path; $('brPath').textContent = j.path || '드라이브';
-    $('brUp').disabled = !j.path;
-    $('brUp').onclick = () => brOpen(j.parent || '');
-    $('brList').innerHTML = j.entries.filter(e => e.dir || brFiles).map((e, i) =>
-      `<li><button data-i="${i}"><span>${e.dir ? '📁 ' : ''}${esc(e.name)}</span><span class="small muted">${e.size != null ? gb(e.size) : ''}</span></button></li>`).join('');
-    const list = j.entries.filter(e => e.dir || brFiles);
-    $('brList').querySelectorAll('button').forEach(b => b.onclick = () => {
-      const e = list[+b.dataset.i];
-      if (e.dir) brOpen(e.path); else { $(brTarget).value = e.path; $(brTarget).dispatchEvent(new Event('input')); $('browser').hidden = true; }
+    const j = await api('/api/ls?path=');
+    const ds = j.entries.filter(e => e.dir || (brFiles && e.disk));
+    $('brDrives').innerHTML = ds.map((e, i) => `<li><button data-i="${i}" title="${esc(e.path)}">${e.disk ? '' : '💾 '}${esc(e.name)}</button></li>`).join('');
+    $('brDrives').querySelectorAll('button').forEach(b => b.onclick = () => {
+      const e = ds[+b.dataset.i];
+      if (e.dir) brOpen(e.path); else { brSelect(e.path); brDone(); }
     });
-  } catch (e) { $('brPath').textContent = e.message; }
+  } catch {}
+}
+async function brOpen(path) {
+  let j;
+  try { j = await api('/api/ls?path=' + encodeURIComponent(path)); }
+  catch (e) { $('brList').innerHTML = `<tr><td colspan="4" class="err">${esc(e.message)}</td></tr>`; $('brEmpty').hidden = true; return; }
+  brCur = j.path; $('brAddr').value = j.path; $('brUp').disabled = !j.path;
+  $('brUp').onclick = () => brOpen(j.parent || '');
+  document.querySelectorAll('#brDrives button').forEach(b => b.classList.toggle('on', !!j.path && j.path.toUpperCase().startsWith(b.title.toUpperCase())));
+  brEntries = j.path ? j.entries : j.entries.filter(e => e.dir || brFiles);
+  $('brList').innerHTML = brEntries.map((e, i) => {
+    const pickable = e.dir || brFiles;
+    return `<tr data-i="${i}" class="${pickable ? '' : 'dim'}"><td title="${esc(e.name)}">${e.disk ? '' : e.dir ? '📁 ' : '📄 '}${esc(e.name)}</td><td>${brDate(e.mtime)}</td><td>${brKind(e)}</td><td style="text-align:right">${e.size != null && !e.dir ? gb(e.size) : ''}</td></tr>`;
+  }).join('');
+  $('brEmpty').hidden = brEntries.length > 0;
+  brSelect(brFiles ? '' : brCur);
+  $('brList').querySelectorAll('tr').forEach(tr => {
+    const e = brEntries[+tr.dataset.i];
+    tr.onclick = () => {
+      if (!e.dir && !brFiles) return;
+      $('brList').querySelectorAll('tr.on').forEach(x => x.classList.remove('on')); tr.classList.add('on');
+      brSelect(e.dir && brFiles ? '' : e.path);
+    };
+    tr.ondblclick = () => { if (e.dir) brOpen(e.path); else if (brFiles) { brSelect(e.path); brDone(); } };
+  });
+}
+function brDone() {
+  if (!brPicked) return;
+  $(brTarget).value = brPicked; $(brTarget).dispatchEvent(new Event('input')); $('browser').hidden = true;
+  if (brTarget == 'imgPath' && /^\\\\\.\\/.test(brPicked)) $('btnInfo').onclick();
 }
 document.querySelectorAll('[data-browse]').forEach(b => b.onclick = () => {
   brTarget = b.dataset.browse; brFiles = !!b.dataset.files;
-  $('brPick').hidden = brFiles; $('brNew').hidden = brFiles; $('browser').hidden = false;
+  $('brTitle').textContent = brFiles ? '파일 선택' : '폴더 선택';
+  $('brNew').hidden = brFiles; $('browser').hidden = false;
   const v = $(brTarget).value.trim();
-  brOpen(v ? (brFiles ? v.replace(/[\\/][^\\/]*$/, '') : v) : '');
+  brDrives();
+  brOpen(v && !/^\\\\\.\\/.test(v) ? (brFiles ? v.replace(/[\\/][^\\/]*$/, '') : v) : '');
 });
-$('brCancel').onclick = () => $('browser').hidden = true;
+$('brAddr').addEventListener('keydown', e => { if (e.key == 'Enter') brOpen($('brAddr').value.trim()); });
+$('brPick').onclick = brDone;
 $('brNew').onclick = async () => {
   if (!brCur) { alert('먼저 드라이브를 여세요.'); return; }
-  const name = (prompt('새 폴더 이름', '복구결과') || '').trim(); if (!name) return;
-  try { const j = await api('/api/mkdir', {path: brCur, name, source: st.info?.path || $('imgPath').value.trim()}); await brOpen(j.path); }
+  const name = (prompt('새 폴더 이름', '새 폴더') || '').trim(); if (!name) return;
+  try { const j = await api('/api/mkdir', {path: brCur, name, source: st.info?.path || $('imgPath').value.trim()}); await brOpen(brCur); brSelect(j.path);
+    const tr = [...$('brList').querySelectorAll('tr')].find(t => brEntries[+t.dataset.i]?.path == j.path); if (tr) { tr.classList.add('on'); tr.scrollIntoView({block: 'nearest'}); } }
   catch (e) { alert(e.message); }
 };
-$('brPick').onclick = () => { if (brCur) { $(brTarget).value = brCur; $(brTarget).dispatchEvent(new Event('input')); } $('browser').hidden = true; };
+$('brCancel').onclick = $('brCancel2').onclick = () => $('browser').hidden = true;
 document.addEventListener('keydown', e => { if (e.key == 'Escape') $('browser').hidden = true; });
 
 // ---- 1 source

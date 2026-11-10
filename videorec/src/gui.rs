@@ -464,6 +464,7 @@ fn ls(path: &str) -> Result<Value> {
             "path": e.path().to_string_lossy(),
             "dir": m.is_dir(),
             "size": if m.is_file() { Some(m.len()) } else { None },
+            "mtime": m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()),
         }));
     }
     entries.sort_by(|a, b| {

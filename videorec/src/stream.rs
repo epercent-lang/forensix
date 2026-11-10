@@ -27,6 +27,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const MAX_NAL: u64 = 8 << 20;
+const GENERIC_MAX_NALS: usize = 4096;
+const GENERIC_MAX_BYTES: u64 = 64 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Framing {
@@ -45,6 +47,9 @@ struct Window<'a> {
     src: &'a Source,
     base: u64,
     buf: Vec<u8>,
+    /// Small reads outside the window (probes far ahead or behind) go here, so
+    /// they do not throw away the large window.
+    small: Vec<u8>,
 }
 
 impl<'a> Window<'a> {
@@ -53,12 +58,22 @@ impl<'a> Window<'a> {
             src,
             base: 0,
             buf: vec![],
+            small: vec![],
         }
     }
     /// Returns up to `n` bytes at `off` (fewer at the end of the source).
     fn get(&mut self, off: u64, n: usize) -> Result<&[u8]> {
         let have = off >= self.base && off + n as u64 <= self.base + self.buf.len() as u64;
+        if !have && n <= 64 << 10 {
+            self.small.resize(n, 0);
+            let got = self.src.read_at(off, &mut self.small)?;
+            self.small.truncate(got);
+            return Ok(&self.small);
+        }
         if !have {
+            if debug() {
+                eprintln!("refetch @{off:#x} n={n} base={:#x}", self.base);
+            }
             let size = n.max(16 << 20);
             self.buf.resize(size, 0);
             let got = self.src.read_at(off, &mut self.buf)?;
@@ -239,6 +254,7 @@ pub struct Carver<'a> {
     /// NAL chains that looked like video but had no parameter sets to decode
     /// them with (in-band, on the medium, or via --reference).
     pub chains_without_params: usize,
+    no_params: bool,
     next_id: usize,
 }
 
@@ -269,6 +285,7 @@ impl<'a> Carver<'a> {
             results: vec![],
             discarded_small: 0,
             chains_without_params: 0,
+            no_params: false,
             next_id: first_id,
         }
     }
@@ -403,11 +420,28 @@ impl<'a> Carver<'a> {
         // New anchor.
         for ci in 0..self.opts.codecs.len() {
             let c = self.opts.codecs[ci];
-            let (nals, run_end) = self.follow(c, framing, at, end, Mode::Generic)?;
+            let (mut nals, mut run_end) = self.follow(c, framing, at, end, Mode::Generic)?;
             if nals.is_empty() {
                 continue;
             }
-            if let Some((ctx, config, strong)) = self.anchor(c, &nals)? {
+            let n0 = nals.len();
+            if debug() && n0 > 2 {
+                eprintln!("try @{at:#x} n={n0} end={run_end:#x}");
+            }
+            self.no_params = false;
+            let got = self.anchor(c, &mut nals)?;
+            if nals.len() < n0
+                && let Some(l) = nals.last()
+            {
+                run_end = l.off + l.len as u64;
+            }
+            if got.is_none() && self.no_params && n0 >= 3 {
+                // Every later unit of this chain would be rejected for the
+                // same reason (no parameter sets anywhere in it): skip the
+                // chain instead of retrying from each of its start codes.
+                return Ok(Some(run_end));
+            }
+            if let Some((ctx, config, strong)) = got {
                 if debug() {
                     eprintln!(
                         "anchor @{at:#x} {:?} n={} t={} strong={strong}",
@@ -462,12 +496,12 @@ impl<'a> Carver<'a> {
     fn anchor(
         &mut self,
         c: Codec,
-        nals: &[NalRef],
+        nals: &mut Vec<NalRef>,
     ) -> Result<Option<(Ctx, Option<VideoConfig>, bool)>> {
         let mut ctx = Ctx::default();
         let mut has_sps = false;
         let mut has_pps = false;
-        for n in nals {
+        for n in nals.iter() {
             if n.info.is_param_set {
                 let b = self.follow.get(n.off, n.len as usize)?.to_vec();
                 ctx.learn(c, &n.info, &b);
@@ -484,8 +518,14 @@ impl<'a> Carver<'a> {
             }
             let mut x = ctx;
             let limit = x.frame_limit();
-            if nals.iter().any(|n| n.info.is_vcl && n.len > limit) {
-                return Ok(None);
+            if let Some(k) = nals.iter().position(|n| n.info.is_vcl && n.len > limit) {
+                // An oversized "frame" ends the real stream (it is data that
+                // merely follows it): keep the part before it.
+                nals.truncate(k);
+                if nals.is_empty() {
+                    return Ok(None);
+                }
+                return self.anchor(c, nals);
             }
             self.prime(c, &mut x, nals);
             return Ok(Some((x, None, true)));
@@ -505,6 +545,7 @@ impl<'a> Carver<'a> {
         if best.is_none() {
             if strong_chain && nals.len() >= 3 {
                 self.chains_without_params += 1;
+                self.no_params = true;
             }
             return Ok(None);
         }
@@ -543,8 +584,12 @@ impl<'a> Carver<'a> {
             None => (ctx, None),
         };
         let limit = x.frame_limit();
-        if nals.iter().any(|n| n.info.is_vcl && n.len > limit) {
-            return Ok(None);
+        if let Some(k) = nals.iter().position(|n| n.info.is_vcl && n.len > limit) {
+            nals.truncate(k);
+            if nals.is_empty() {
+                return Ok(None);
+            }
+            return self.anchor(c, nals);
         }
         self.prime(c, &mut x, nals);
         Ok(Some((x, cfg, strong_chain && nals.len() >= 3)))
@@ -603,7 +648,15 @@ impl<'a> Carver<'a> {
         let mut run_end = at;
         let finder = memchr::memmem::Finder::new(&[0u8, 0, 1]);
         let mut q = at;
+        let generic = matches!(mode, Mode::Generic);
         loop {
+            // Deciding whether a chain starts a stream needs only its first
+            // few thousand units; the rest is followed as a continuation.
+            // Without this cap every rejected candidate walked to the end of
+            // all contiguous NAL-like data (hundreds of MB), many times over.
+            if generic && (nals.len() >= GENERIC_MAX_NALS || q - at >= GENERIC_MAX_BYTES) {
+                break;
+            }
             // Locate the next NAL: (header offset, length, next position).
             let (off, len, next) = match framing {
                 Framing::LengthPrefixed => {
