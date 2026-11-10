@@ -10,6 +10,7 @@ mod avi;
 mod codec;
 mod container;
 mod fs;
+mod gui;
 mod io;
 mod jdr;
 mod mjpeg;
@@ -17,6 +18,7 @@ mod mp4;
 mod ntfs;
 mod progress;
 mod ranges;
+mod recorder;
 mod report;
 mod session;
 mod stream;
@@ -88,6 +90,15 @@ enum GroupArg {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Start the local GUI (opens a browser page on 127.0.0.1).
+    Gui {
+        /// Port on 127.0.0.1 (0 picks a free one).
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        /// Only print the address; do not open a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
     /// Show partitions, file systems and deleted entries.
     Info { image: PathBuf },
     /// List every file (live and deleted) with size, times and on-disk extents, as CSV.
@@ -374,6 +385,12 @@ fn sanitize(s: &str) -> String {
 fn info(image: &Path) -> Result<()> {
     let src = Source::open(image)?;
     println!("source: {} ({} bytes)", image.display(), src.len());
+    for h in recorder::detect(&src)? {
+        println!(
+            "recorder disk: {} ({:?} at {:#x}; source: {}). Its file system is not parsed yet; `recover` finds the video by frame carving.",
+            h.system, h.signature, h.offset, h.source
+        );
+    }
     for v in volumes(&src)? {
         println!("volume @ {:#x}, {} bytes, {:?}", v.offset, v.length, v.kind);
         if let Some(fsi) = fs::analyze(&src, &v)? {
@@ -764,6 +781,10 @@ fn recover(
     summary.insert("source_size".into(), src.len().into());
     summary.insert("volumes".into(), vol_info.into());
     summary.insert(
+        "recorder_disk".into(),
+        serde_json::to_value(recorder::detect(&src)?)?,
+    );
+    summary.insert(
         "scanned_bytes".into(),
         regions.iter().map(|r| r.1 - r.0).sum::<u64>().into(),
     );
@@ -897,6 +918,10 @@ fn extract(image: &Path, path: &str, out: &Path, max_bytes: Option<u64>) -> Resu
 }
 
 fn main() -> Result<()> {
+    // Started with no arguments (e.g. double-clicked): open the GUI.
+    if std::env::args_os().len() == 1 {
+        return gui::run(0, true);
+    }
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Export {
@@ -934,6 +959,7 @@ fn main() -> Result<()> {
             )?;
             export(&session, image.as_deref(), &out, &o, quiet)
         }
+        Cmd::Gui { port, no_browser } => gui::run(port, !no_browser),
         Cmd::Info { image } => info(&image),
         Cmd::List { image, out } => list(&image, out.as_deref()),
         Cmd::Extract {
