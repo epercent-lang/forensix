@@ -137,6 +137,9 @@ enum Cmd {
         camera: Option<String>,
         #[arg(long, short)]
         quiet: bool,
+        /// Leave the recorder's audio out of rebuilt clips.
+        #[arg(long)]
+        no_audio: bool,
     },
     /// Recover video into an output directory.
     Recover {
@@ -189,6 +192,9 @@ enum Cmd {
         /// No progress line.
         #[arg(long, short)]
         quiet: bool,
+        /// Leave the recorder's audio out of rebuilt clips.
+        #[arg(long)]
+        no_audio: bool,
         /// Save what the scan found (positions only, no video) to this file,
         /// for `export` later without scanning again. Keep it off the source disk.
         #[arg(long)]
@@ -221,6 +227,7 @@ struct ClipExtra {
     camera: Option<String>,
     quiet: bool,
     save_session: Option<PathBuf>,
+    no_audio: bool,
 }
 
 fn clip_opts(
@@ -260,6 +267,7 @@ fn clip_opts(
             Some(c) => jdr::parse_cameras(c)
                 .with_context(|| format!("bad camera list {c:?}; use e.g. 1,3 or 1-2"))?,
         },
+        audio: !x.no_audio,
     })
 }
 
@@ -905,6 +913,7 @@ fn main() -> Result<()> {
             to,
             camera,
             quiet,
+            no_audio,
         } => {
             let x = ClipExtra {
                 format,
@@ -914,6 +923,7 @@ fn main() -> Result<()> {
                 camera,
                 quiet,
                 save_session: None,
+                no_audio,
             };
             let o = clip_opts(
                 &x,
@@ -950,6 +960,7 @@ fn main() -> Result<()> {
             to,
             camera,
             quiet,
+            no_audio,
             save_session,
             max_gap_kib,
             min_frames,
@@ -977,6 +988,7 @@ fn main() -> Result<()> {
                 camera,
                 quiet,
                 save_session,
+                no_audio,
             },
             max_gap_kib,
             min_frames,

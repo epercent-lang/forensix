@@ -282,11 +282,24 @@ def jdr_chunk(ch, tag, payload, fmt, t_ms):
     return head + payload
 
 
+def jdr_audio(pas, seconds=60):
+    """Deterministic test sound for one pass: a tone plus noise, so every
+    1024-byte chunk is distinct."""
+    import math
+    import random
+    rnd = random.Random(pas)
+    f = 440 * pas
+    return b"".join(struct.pack("<h", int(8000 * math.sin(2 * math.pi * f * i / 8000)) + rnd.randint(-500, 500))
+                    for i in range(8000 * seconds))
+
+
 def jdr_pass(streams, pas, start_ms):
     """Bytes of each slot for one pass: channels interleaved frame by frame,
     with audio and sensor chunks, JDR_SECONDS_PER_SLOT seconds per slot."""
     slots = []
     n = len(streams[(pas, 0)][1])
+    pcm = jdr_audio(pas)
+    audio_n = [0]
     per = 30 * JDR_SECONDS_PER_SLOT
     for s0 in range(0, n, per):
         body = bytearray()
@@ -297,8 +310,12 @@ def jdr_pass(streams, pas, start_ms):
                 w, h = map(int, size.split("x"))
                 idr, au = aus[i]
                 body += jdr_chunk(ch, "VI" if idr else "VP", au, h << 20 | w << 8 | 30, t)
-            if i % 3 == 0:
-                body += jdr_chunk(0, "AD", os.urandom(1024), 0, t)
+            # Audio as on the real card: 512 samples (1024 bytes) of 16-bit
+            # PCM at 8 kHz every 64 ms, tag digit cycling 0-2.
+            while start_ms + audio_n[0] * 64 <= t:
+                a = audio_n[0]
+                body += jdr_chunk(a % 3, "AD", pcm[a * 1024:(a + 1) * 1024], 0, start_ms + a * 64)
+                audio_n[0] += 1
             if i % 10 == 0:
                 body += jdr_chunk(0, "SE", os.urandom(12), 0, t)
         slot = bytearray(b"1NAJ" + bytes(0x1FC) + b"1VEJ" + bytes(0x800 - 0x204))
@@ -468,8 +485,13 @@ def main():
         run("mcopy", "-i", img, fn, f"::/data/{k:08d}.jdr")
     shutil.rmtree(tmp)
     # Pass 1 keeps roughly seconds 12.5-20 of 20; pass 2 is complete.
+    for p in (1, 2):
+        open(os.path.join(vdir, f"P{p}_audio.pcm"), "wb").write(jdr_audio(p))
     truth["jdr_ring"] = {"expect": [f"P{p}_CH{c}.h264" for p in (1, 2) for c in (0, 1, 2)], "live": [],
-                         "min_share": {f"P1_CH{c}.h264": 0.3 for c in (0, 1, 2)}}
+                         "min_share": {f"P1_CH{c}.h264": 0.3 for c in (0, 1, 2)},
+                         # Share of the pass's audio chunks found, byte-exact, in the outputs' sound.
+                         "audio": {"P1_audio.pcm": 0.3, "P2_audio.pcm": 0.95},
+                         "audio_chunks": {"P1_audio.pcm": 20000 // 64 + 1, "P2_audio.pcm": 12500 // 64 + 1}}
 
     # 9. Raw Motion-JPEG frames (AVI header lost) between random data, next
     #    to a single still photo that must not become a video.

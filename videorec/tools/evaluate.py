@@ -32,6 +32,13 @@ def frame_hashes(path):
     return [l.rsplit(",", 1)[1].strip() for l in r.stdout.splitlines() if l and not l.startswith("#")]
 
 
+def audio_pcm(path):
+    """First audio stream as 16-bit little-endian PCM, or b"" if none."""
+    r = subprocess.run(["ffmpeg", "-v", "quiet", "-i", path, "-map", "0:a:0", "-f", "s16le", "-"],
+                       capture_output=True)
+    return r.stdout
+
+
 def main():
     work = sys.argv[1]
     exe = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(__file__), "..", "target", "release", "videorec")
@@ -72,6 +79,18 @@ def main():
             ok = share >= need
             failed |= not ok
             rows.append((scen, name, "yes" if exact else "no", f"{len(got)}/{len(of)}", f"{share:.0%}", "PASS" if ok else f"FAIL (<{need:.0%})"))
+        if t.get("audio"):
+            sound = b"".join(audio_pcm(p) for p in outputs)
+            for name, need in t["audio"].items():
+                ref = open(os.path.join(vdir, name), "rb").read()
+                # Only chunks the recording actually held: up to the pass length.
+                chunks = [ref[i:i + 1024] for i in range(0, len(ref), 1024)]
+                chunks = chunks[:t.get("audio_chunks", {}).get(name, len(chunks))]
+                found = sum(1 for c in chunks if c in sound)
+                share = found / len(chunks)
+                ok = share >= need
+                failed |= not ok
+                rows.append((scen, name, "", f"{found}/{len(chunks)}", f"{share:.0%}", "PASS" if ok else f"FAIL (<{need:.0%})"))
         noise = [os.path.basename(p) for p in outputs if p not in used]
         rows.append((scen, "(unmatched outputs)", "", str(len(noise)), "", ", ".join(noise)[:60]))
     w = [max(len(str(r[i])) for r in rows) for i in range(6)]

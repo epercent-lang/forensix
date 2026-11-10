@@ -434,6 +434,9 @@ pub struct Mp4Writer {
     sizes: Vec<u32>,
     offsets: Vec<u64>,
     keys: Vec<u32>,
+    /// PCM blocks written to mdat: (offset, bytes).
+    audio: Vec<(u64, u32)>,
+    audio_rate: u32,
 }
 
 impl Mp4Writer {
@@ -453,6 +456,8 @@ impl Mp4Writer {
             sizes: vec![],
             offsets: vec![],
             keys: vec![],
+            audio: vec![],
+            audio_rate: 0,
         })
     }
 
@@ -465,6 +470,106 @@ impl Mp4Writer {
         }
         self.pos += data.len() as u64;
         Ok(())
+    }
+
+    /// Adds a block of mono signed 16-bit little-endian PCM at `rate` Hz,
+    /// stored as a second track (`sowt` sample entry). Bytes are written as
+    /// given.
+    pub fn add_audio(&mut self, data: &[u8], rate: u32) -> Result<()> {
+        if data.len() < 2 {
+            return Ok(());
+        }
+        let data = &data[..data.len() & !1];
+        self.out.write_all(data)?;
+        self.audio.push((self.pos, data.len() as u32));
+        self.audio_rate = rate;
+        self.pos += data.len() as u64;
+        Ok(())
+    }
+
+    fn sound_trak(&self) -> Vec<u8> {
+        let rate = self.audio_rate.max(1);
+        let n: u64 = self.audio.iter().map(|a| a.1 as u64 / 2).sum();
+        let dur_ms = (n * 1000 / rate as u64).min(u32::MAX as u64) as u32;
+        let mut tkhd = vec![];
+        tkhd.extend_from_slice(&[0u8; 8]);
+        tkhd.extend_from_slice(&2u32.to_be_bytes());
+        tkhd.extend_from_slice(&[0u8; 4]);
+        tkhd.extend_from_slice(&dur_ms.to_be_bytes());
+        tkhd.extend_from_slice(&[0u8; 8]);
+        tkhd.extend_from_slice(&[0, 0, 0, 1]); // layer 0, alternate group 1
+        tkhd.extend_from_slice(&0x0100u16.to_be_bytes()); // volume 1.0
+        tkhd.extend_from_slice(&[0, 0]);
+        tkhd.extend_from_slice(&matrix());
+        tkhd.extend_from_slice(&[0u8; 8]);
+
+        let mut mdhd = vec![];
+        mdhd.extend_from_slice(&[0u8; 8]);
+        mdhd.extend_from_slice(&rate.to_be_bytes());
+        mdhd.extend_from_slice(&(n.min(u32::MAX as u64) as u32).to_be_bytes());
+        mdhd.extend_from_slice(&0x55C4u16.to_be_bytes());
+        mdhd.extend_from_slice(&[0, 0]);
+
+        let mut hdlr = vec![0u8; 4];
+        hdlr.extend_from_slice(b"soun");
+        hdlr.extend_from_slice(&[0u8; 12]);
+        hdlr.extend_from_slice(b"SoundHandler\0");
+
+        // SoundSampleEntry: 16-bit little-endian PCM, mono.
+        let mut e = vec![0u8; 6];
+        e.extend_from_slice(&1u16.to_be_bytes()); // data reference index
+        e.extend_from_slice(&[0u8; 8]);
+        e.extend_from_slice(&1u16.to_be_bytes()); // channels
+        e.extend_from_slice(&16u16.to_be_bytes()); // bits
+        e.extend_from_slice(&[0u8; 4]);
+        e.extend_from_slice(&(rate << 16).to_be_bytes());
+        let mut stsd = 1u32.to_be_bytes().to_vec();
+        stsd.extend(bx(b"sowt", &e));
+
+        let mut stts = 1u32.to_be_bytes().to_vec();
+        stts.extend_from_slice(&(n as u32).to_be_bytes());
+        stts.extend_from_slice(&1u32.to_be_bytes());
+
+        // One mp4 chunk per block; a new stsc entry when the block size changes.
+        let mut entries: Vec<(u32, u32)> = vec![];
+        for (i, a) in self.audio.iter().enumerate() {
+            let per = a.1 / 2;
+            if entries.last().is_none_or(|e| e.1 != per) {
+                entries.push((i as u32 + 1, per));
+            }
+        }
+        let mut stsc = (entries.len() as u32).to_be_bytes().to_vec();
+        for (first, per) in entries {
+            stsc.extend_from_slice(&first.to_be_bytes());
+            stsc.extend_from_slice(&per.to_be_bytes());
+            stsc.extend_from_slice(&1u32.to_be_bytes());
+        }
+        let mut stsz = 2u32.to_be_bytes().to_vec();
+        stsz.extend_from_slice(&(n as u32).to_be_bytes());
+        let mut co64 = (self.audio.len() as u32).to_be_bytes().to_vec();
+        for a in &self.audio {
+            co64.extend_from_slice(&a.0.to_be_bytes());
+        }
+        let mut stbl = full(b"stsd", 0, 0, &stsd);
+        stbl.extend(full(b"stts", 0, 0, &stts));
+        stbl.extend(full(b"stsc", 0, 0, &stsc));
+        stbl.extend(full(b"stsz", 0, 0, &stsz));
+        stbl.extend(full(b"co64", 0, 0, &co64));
+        let dref = full(
+            b"dref",
+            0,
+            0,
+            &[&1u32.to_be_bytes()[..], &full(b"url ", 0, 1, &[])].concat(),
+        );
+        let mut minf = full(b"smhd", 0, 0, &[0u8; 4]);
+        minf.extend(bx(b"dinf", &dref));
+        minf.extend(bx(b"stbl", &stbl));
+        let mut mdia = full(b"mdhd", 0, 0, &mdhd);
+        mdia.extend(full(b"hdlr", 0, 0, &hdlr));
+        mdia.extend(bx(b"minf", &minf));
+        let mut trak = full(b"tkhd", 0, 3, &tkhd);
+        trak.extend(bx(b"mdia", &mdia));
+        bx(b"trak", &trak)
     }
 
     /// Finishes with a constant frame rate.
@@ -488,16 +593,19 @@ impl Mp4Writer {
         let dur_ts: u64 = durations.iter().map(|&d| d as u64).sum();
         let dur_ms = (dur_ts * 1000 / timescale as u64).min(u32::MAX as u64) as u32;
 
+        let audio_ms = (self.audio.iter().map(|a| a.1 as u64 / 2).sum::<u64>() * 1000
+            / self.audio_rate.max(1) as u64)
+            .min(u32::MAX as u64) as u32;
         let mut mvhd = vec![];
         mvhd.extend_from_slice(&[0u8; 8]);
         mvhd.extend_from_slice(&1000u32.to_be_bytes());
-        mvhd.extend_from_slice(&dur_ms.to_be_bytes());
+        mvhd.extend_from_slice(&dur_ms.max(audio_ms).to_be_bytes());
         mvhd.extend_from_slice(&0x0001_0000u32.to_be_bytes());
         mvhd.extend_from_slice(&0x0100u16.to_be_bytes());
         mvhd.extend_from_slice(&[0u8; 10]);
         mvhd.extend_from_slice(&matrix());
         mvhd.extend_from_slice(&[0u8; 24]);
-        mvhd.extend_from_slice(&2u32.to_be_bytes());
+        mvhd.extend_from_slice(&(if self.audio.is_empty() { 2u32 } else { 3 }).to_be_bytes());
 
         let (w, h) = sample_entry_dims(sample_entry);
         let mut tkhd = vec![];
@@ -584,6 +692,9 @@ impl Mp4Writer {
 
         let mut moov = full(b"mvhd", 0, 0, &mvhd);
         moov.extend(bx(b"trak", &trak));
+        if !self.audio.is_empty() {
+            moov.extend(self.sound_trak());
+        }
         let moov = bx(b"moov", &moov);
 
         self.out.write_all(&moov)?;

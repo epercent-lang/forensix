@@ -352,6 +352,34 @@ pub struct ClipOpts {
     pub to_ms: Option<i64>,
     /// Camera numbers (channel + 1) to keep; empty keeps all.
     pub cameras: Vec<u32>,
+    /// Add the recorder's audio (AD chunks) to each clip.
+    pub audio: bool,
+}
+
+/// Audio in AD chunks, as measured on a G-NET CATCHON card: mono signed
+/// 16-bit little-endian PCM, 512 samples per 1024-byte chunk, one chunk about
+/// every 64 ms, so 8000 Hz. The tag digit of AD chunks does not separate
+/// microphones: chunks of all digits form one stream in time order.
+pub const AUDIO_RATE: u32 = 8000;
+
+/// PCM for `[t0, t1)` built from AD chunks sorted by time. Gaps longer than
+/// 200 ms are filled with silence so sound stays in step with the video.
+/// Returns (PCM bytes, chunks used).
+fn audio_for(src: &Source, audio: &[Chunk], t0: i64, t1: i64) -> Result<(Vec<u8>, usize)> {
+    let block_ms = 512 * 1000 / AUDIO_RATE as i64;
+    let lo = audio.partition_point(|a| a.t_ms < t0 - block_ms / 2);
+    let hi = audio.partition_point(|a| a.t_ms < t1);
+    let mut pcm: Vec<u8> = vec![];
+    let slack = AUDIO_RATE as i64 / 5 * 2;
+    for a in &audio[lo..hi] {
+        let at = ((a.t_ms - t0).max(0) * AUDIO_RATE as i64 / 1000) * 2;
+        if at > pcm.len() as i64 + slack {
+            pcm.resize(at as usize, 0);
+        }
+        let p = src.read_vec(a.off + HEADER as u64, a.size as usize)?;
+        pcm.extend_from_slice(&p[..p.len() & !1]);
+    }
+    Ok((pcm, hi - lo))
 }
 
 /// Parses `YYYY-MM-DD` or `YYYY-MM-DD hh:mm[:ss]` (also with `T`). A date
@@ -422,6 +450,17 @@ pub fn write_clips(
     channels.sort_unstable();
     channels.dedup();
     let mut id = first_id;
+    let mut audio: Vec<Chunk> = if o.audio {
+        chunks
+            .iter()
+            .filter(|c| c.kind == Kind::Audio && c.size >= 2 && c.size % 2 == 0)
+            .copied()
+            .collect()
+    } else {
+        vec![]
+    };
+    audio.sort_by_key(|c| (c.t_ms, c.off));
+    audio.dedup_by_key(|c| c.t_ms);
     for ch in channels {
         let mut v: Vec<&Chunk> = chunks
             .iter()
@@ -514,7 +553,16 @@ pub fn write_clips(
             if dry_run {
                 continue;
             }
-            match write_one(src, seg, out, id, params, if damaged { k } else { 0 }, o)? {
+            match write_one(
+                src,
+                seg,
+                out,
+                id,
+                params,
+                if damaged { k } else { 0 },
+                o,
+                &audio,
+            )? {
                 Some(r) => {
                     items.push(r);
                     id += 1;
@@ -538,6 +586,7 @@ fn params_of(src: &Source, c: &Chunk) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_one(
     src: &Source,
     seg: &[&Chunk],
@@ -547,6 +596,7 @@ fn write_one(
     // Number of leading frames with no key frame before them.
     lead: usize,
     o: &ClipOpts,
+    audio: &[Chunk],
 ) -> Result<Option<Recovered>> {
     let no_key = lead > 0;
     let first = seg[0];
@@ -599,9 +649,11 @@ fn write_one(
         Mp4(Mp4Writer),
         Avi(AviWriter),
     }
+    let last = seg[seg.len() - 1];
+    let (pcm, audio_chunks) = audio_for(src, audio, first.t_ms, last.t_ms + nominal as i64)?;
     let mut w = match o.format {
         Format::Mp4 => W::Mp4(Mp4Writer::create(&path)?),
-        Format::Avi => W::Avi(AviWriter::create(
+        Format::Avi if pcm.is_empty() => W::Avi(AviWriter::create(
             &path,
             *b"H264",
             first.width(),
@@ -609,8 +661,30 @@ fn write_one(
             fps,
             1,
         )?),
+        Format::Avi => W::Avi(AviWriter::create_with_audio(
+            &path,
+            *b"H264",
+            first.width(),
+            first.height(),
+            fps,
+            1,
+            AUDIO_RATE,
+        )?),
     };
+    // Audio is interleaved about every half second of video time.
+    let mut pcm_done = 0usize;
     for (k, c) in seg.iter().enumerate() {
+        let upto = ((((c.t_ms - first.t_ms) + 500) * AUDIO_RATE as i64 / 1000) * 2) as usize;
+        if k == 0 || upto >= pcm_done + AUDIO_RATE as usize {
+            let e = upto.min(pcm.len());
+            if e > pcm_done {
+                match &mut w {
+                    W::Mp4(w) => w.add_audio(&pcm[pcm_done..e], AUDIO_RATE)?,
+                    W::Avi(w) => w.add_audio(&pcm[pcm_done..e])?,
+                }
+                pcm_done = e;
+            }
+        }
         let p = src.read_vec(c.off + HEADER as u64, c.size as usize)?;
         let key = c.kind == Kind::Key;
         keys += key as usize;
@@ -647,12 +721,25 @@ fn write_one(
             pieces += 1;
         }
     }
+    if pcm_done < pcm.len() {
+        match &mut w {
+            W::Mp4(w) => w.add_audio(&pcm[pcm_done..], AUDIO_RATE)?,
+            W::Avi(w) => w.add_audio(&pcm[pcm_done..])?,
+        }
+    }
     match w {
         W::Mp4(w) => w.finish_timed(&entry, 1000, &durations)?,
         W::Avi(w) => w.finish()?,
     }
-    let last = seg[seg.len() - 1];
     let size = std::fs::metadata(&path)?.len();
+    let sound = if pcm.is_empty() {
+        "no audio found for this time".to_string()
+    } else {
+        format!(
+            "audio: {audio_chunks} AD chunks, {:.1} s of 16-bit PCM at {AUDIO_RATE} Hz",
+            pcm.len() as f64 / 2.0 / AUDIO_RATE as f64
+        )
+    };
     Ok(Some(Recovered {
         id,
         kind: "jdr_clip".into(),
@@ -675,11 +762,11 @@ fn write_one(
         status: if no_key { "partial" } else { "ok" }.into(),
         notes: if no_key {
             format!(
-                "timestamps from recorder; video only (audio not decoded); first {lead} of {} frames have no key frame before them, so their picture is damaged",
+                "timestamps from recorder; {sound}; first {lead} of {} frames have no key frame before them, so their picture is damaged",
                 seg.len()
             )
         } else {
-            "timestamps from recorder; video only (audio not decoded)".into()
+            format!("timestamps from recorder; {sound}")
         },
         ..Default::default()
     }))
