@@ -9,6 +9,7 @@
 mod avi;
 mod codec;
 mod container;
+mod dhav;
 mod fs;
 mod gui;
 mod io;
@@ -68,6 +69,8 @@ enum Vendor {
     Auto,
     /// Always scan for G-NET `.jdr` chunks.
     Jdr,
+    /// Always scan for Dahua DVR/NVR frames (DHAV).
+    Dahua,
     /// Generic carving only.
     None,
 }
@@ -784,6 +787,42 @@ fn recover(
             .filter_map(|&(s, e)| (s.max(a) < e.min(b)).then_some((s.max(a), e.min(b))))
             .collect();
         summary.insert("carve_range".into(), serde_json::json!([a, b]));
+    }
+
+    // Dahua DVR/NVR frames: camera and time in every frame header.
+    let dahua_disk = recorder::detect(&src)?
+        .iter()
+        .any(|h| h.system.starts_with("Dahua"));
+    if vendor == Vendor::Dahua || (vendor == Vendor::Auto && dahua_disk) {
+        let gaps: Vec<(u64, u64)> = regions
+            .iter()
+            .flat_map(|&(a, b)| covered.clone().gaps(a, b))
+            .collect();
+        progress::stage("dvr", gaps.iter().map(|g| g.1 - g.0).sum(), clip_extra.quiet);
+        let mut cov = Ranges::new();
+        let mut st = dhav::Stats::default();
+        let (chunks, older_frames) = dhav::scan(&src, &gaps, &mut cov, &mut st)?;
+        progress::end_stage();
+        let mut by_month = jdr::Stats::new();
+        let (mut got, discarded) =
+            jdr::write_clips(&src, &chunks, out, items.len() + 1, &clip_opts, &mut by_month)?;
+        let mut older = 0;
+        for r in got.iter_mut() {
+            if older_frames.contains(&r.source_start) {
+                older += 1;
+                r.notes.push_str("; older footage: found after newer recording in the same 2 MiB area of the disk, i.e. left over where the recorder has since written");
+            }
+        }
+        summary.insert("dvr_frames".into(), serde_json::to_value(&st)?);
+        summary.insert("dvr_clips_older_footage".into(), older.into());
+        summary.insert("dvr_segments_discarded".into(), discarded.into());
+        summary.insert("dvr_by_month".into(), serde_json::to_value(&by_month)?);
+        items.extend(got);
+        cov.normalize();
+        for (s, e) in cov.iter() {
+            covered.add(s, e);
+        }
+        covered.normalize();
     }
 
     // Stage 2: intact containers in the scanned regions.

@@ -46,6 +46,11 @@ pub struct Chunk {
     pub fmt: u32,
     /// Milliseconds since 1970-01-01 of the recorder's local clock.
     pub t_ms: i64,
+    /// Header length before the payload, and trailer length after it.
+    pub hdr: u16,
+    pub tail: u16,
+    /// Dahua DHAV frame (see `dhav.rs`) instead of a G-NET `.jdr` chunk.
+    pub dahua: bool,
 }
 
 impl Chunk {
@@ -59,12 +64,15 @@ impl Chunk {
         self.fmt & 0xFF
     }
     pub fn end(&self) -> u64 {
-        self.off + HEADER as u64 + self.size as u64
+        self.payload() + self.size as u64 + self.tail as u64
+    }
+    pub fn payload(&self) -> u64 {
+        self.off + self.hdr as u64
     }
 }
 
 /// Days from 1970-01-01 for a proleptic Gregorian date (H. Hinnant's algorithm).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
@@ -140,6 +148,9 @@ pub fn parse_header(b: &[u8], off: u64) -> Option<Chunk> {
             * 60_000
             + s as i64 * 1000
             + ms as i64,
+        hdr: HEADER as u16,
+        tail: 0,
+        dahua: false,
     };
     match kind {
         Kind::Key | Kind::Frame => {
@@ -382,7 +393,7 @@ fn audio_for(src: &Source, audio: &[Chunk], t0: i64, t1: i64) -> Result<(Vec<u8>
         if at > pcm.len() as i64 + slack {
             pcm.resize(at as usize, 0);
         }
-        let p = src.read_vec(a.off + HEADER as u64, a.size as usize)?;
+        let p = src.read_vec(a.payload(), a.size as usize)?;
         pcm.extend_from_slice(&p[..p.len() & !1]);
     }
     Ok((pcm, hi - lo))
@@ -585,7 +596,7 @@ pub fn write_clips(
 
 /// SPS and PPS carried in a key-frame chunk.
 fn params_of(src: &Source, c: &Chunk) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
-    let payload = src.read_vec(c.off + HEADER as u64, c.size as usize)?;
+    let payload = src.read_vec(c.payload(), c.size as usize)?;
     let nals = split_nals(&payload);
     let sps = nals.iter().find(|n| n[0] & 0x1F == 7).map(|n| n.to_vec());
     let pps = nals.iter().find(|n| n[0] & 0x1F == 8).map(|n| n.to_vec());
@@ -619,12 +630,12 @@ fn write_one(
         fps: Some(first.fps() as f64),
         origin: if no_key {
             if lead == seg.len() {
-                "borrowed from another key frame of the same channel and format (jdr)".into()
+                "borrowed from another key frame of the same channel and format".into()
             } else {
-                "in-band (jdr)".into()
+                "in-band".into()
             }
         } else {
-            "in-band (jdr)".into()
+            "in-band".into()
         },
     };
     let Some(entry) = mp4::sample_entry(&cfg) else {
@@ -640,7 +651,8 @@ fn write_one(
     };
     std::fs::create_dir_all(out.join(&sub))?;
     let stem = format!(
-        "jdr_{id:05}_{cam}_{}",
+        "{}_{id:05}_{cam}_{}",
+        if first.dahua { "dvr" } else { "jdr" },
         start.replace([':', '-'], "").replace(['T', '.'], "_")
     );
     let ext = match o.format {
@@ -694,7 +706,7 @@ fn write_one(
                 pcm_done = e;
             }
         }
-        let p = src.read_vec(c.off + HEADER as u64, c.size as usize)?;
+        let p = src.read_vec(c.payload(), c.size as usize)?;
         let key = c.kind == Kind::Key;
         keys += key as usize;
         match &mut w {
@@ -751,7 +763,7 @@ fn write_one(
     };
     Ok(Some(Recovered {
         id,
-        kind: "jdr_clip".into(),
+        kind: if first.dahua { "dvr_clip" } else { "jdr_clip" }.into(),
         output: rel,
         sha256: report::sha256_file(&path)?,
         size,

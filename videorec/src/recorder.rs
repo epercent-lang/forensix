@@ -7,7 +7,8 @@
 //!   ICDF2C 2015, LNICST 157, DOI 10.1007/978-3-319-25512-5_13
 //!   (master sector "HIKVISION@HANGZHOU" at 0x200, index "HIKBTREE").
 //! - Dahua: Rzayeva et al., Information 16(11):983, 2025,
-//!   DOI 10.3390/info16110983 ("DHFS4.1" looked for at 512, 1024, 2048).
+//!   DOI 10.3390/info16110983 ("DHFS4.1" looked for at 512, 1024, 2048;
+//!   also at 0, where a DH-HCVR5216AN-S2 disk has it).
 //! - Honeywell: Yoon, Hwang, DFRWS USA 2026 (machine data at 0x4400,
 //!   "sn private disk" in the paper's hex figure).
 
@@ -37,7 +38,9 @@ pub fn detect(src: &Source) -> Result<Vec<Hit>> {
     src.read_exact_at(0, &mut head)?;
     let mut hits = vec![];
     let at = |o: usize, p: &[u8]| head.len() >= o + p.len() && &head[o..o + p.len()] == p;
-    for o in [0x200usize, 0x400, 0x800] {
+    // Offset 0 too: a 4 TB Dahua DH-HCVR5216AN-S2 disk has "DHFS4.1" at 0
+    // (checked on the user's disk, 2026-11-10).
+    for o in [0usize, 0x200, 0x400, 0x800] {
         if at(o, b"HIKVISION@HANGZHOU") {
             hits.push(Hit {
                 system: "Hikvision DVR/NVR",
