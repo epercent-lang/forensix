@@ -231,15 +231,16 @@ pub fn check_avi(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
     }))
 }
 
-/// Scans `[start, end)` at 512-byte alignment for container starts and
-/// anywhere for avcC/hvcC boxes. Calls `found` for each container.
-pub fn scan(
+/// Like `scan`, for container starts in `[start, stop)` of a region ending
+/// at `end` (a container may extend up to `end`). Returns where to resume.
+pub fn scan_window(
     src: &Source,
     start: u64,
+    stop: u64,
     end: u64,
     configs: &mut Vec<VideoConfig>,
     found: &mut dyn FnMut(Container) -> Result<u64>,
-) -> Result<()> {
+) -> Result<u64> {
     const CHUNK: usize = 8 << 20;
     let mut pos = start - start % 512;
     if pos < start {
@@ -249,13 +250,13 @@ pub fn scan(
         memchr::memmem::Finder::new(b"avcC"),
         memchr::memmem::Finder::new(b"hvcC"),
     ];
-    while pos < end {
+    while pos < stop {
         crate::progress::at(pos);
         if crate::progress::stopped() {
             break;
         }
-        let len = CHUNK.min((end - pos) as usize);
-        let buf = src.read_vec(pos, len + 4096)?;
+        let len = CHUNK.min((stop - pos) as usize);
+        let buf = src.read_vec(pos, (len + 4096).min((end - pos) as usize))?;
         let real = len.min(buf.len());
         // Decoder configs.
         for (fi, f) in finders.iter().enumerate() {
@@ -324,5 +325,5 @@ pub fn scan(
         }
         pos = next;
     }
-    Ok(())
+    Ok(pos.max(stop))
 }

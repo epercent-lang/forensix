@@ -23,12 +23,14 @@ use crate::io::Source;
 use crate::mp4::{self, Mp4Writer, VideoConfig};
 use crate::report::{self, Recovered};
 use anyhow::Result;
+use std::cell::Cell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
-const MAX_NAL: u64 = 8 << 20;
+pub(crate) const MAX_NAL: u64 = 8 << 20;
 const GENERIC_MAX_NALS: usize = 4096;
-const GENERIC_MAX_BYTES: u64 = 64 << 20;
+pub(crate) const GENERIC_MAX_BYTES: u64 = 64 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Framing {
@@ -233,6 +235,8 @@ struct Stream {
     /// consistent frames follow.
     confirmed: bool,
     vcl_since_anchor: usize,
+    /// Following stopped at the carver's soft limit, not at the stream's end.
+    soft: bool,
 }
 
 fn debug() -> bool {
@@ -241,7 +245,7 @@ fn debug() -> bool {
 
 pub struct Carver<'a> {
     opts: &'a Options,
-    configs: &'a [VideoConfig],
+    configs: Vec<VideoConfig>,
     hints: &'a [Hint],
     out_dir: PathBuf,
     scan: Window<'a>,
@@ -255,7 +259,14 @@ pub struct Carver<'a> {
     /// them with (in-band, on the medium, or via --reference).
     pub chains_without_params: usize,
     no_params: bool,
-    next_id: usize,
+    ids: Rc<Cell<usize>>,
+    /// Established streams are followed only up to here in one call (the
+    /// caller has not looked at the data beyond it yet). `u64::MAX`: no limit.
+    pub soft_end: u64,
+    /// The list of out-of-band parameter sets was used for a decision.
+    pub consulted: bool,
+    /// The last `follow` stopped because of `soft_end`.
+    hit_soft: bool,
 }
 
 /// Validation mode for following a chain of NAL units.
@@ -268,10 +279,10 @@ impl<'a> Carver<'a> {
     pub fn new(
         src: &'a Source,
         opts: &'a Options,
-        configs: &'a [VideoConfig],
+        configs: Vec<VideoConfig>,
         hints: &'a [Hint],
         out_dir: &Path,
-        first_id: usize,
+        ids: Rc<Cell<usize>>,
     ) -> Self {
         Self {
             opts,
@@ -286,19 +297,31 @@ impl<'a> Carver<'a> {
             discarded_small: 0,
             chains_without_params: 0,
             no_params: false,
-            next_id: first_id,
+            ids,
+            soft_end: u64::MAX,
+            consulted: false,
+            hit_soft: false,
         }
     }
 
-    /// Scans one region. Streams may continue across regions if the gap is small.
-    pub fn scan_region(&mut self, start: u64, end: u64) -> Result<()> {
+    /// Scans start positions in `[start, stop)` of a region that ends at
+    /// `end` (streams are followed up to `end`). Returns where to resume:
+    /// at or after `stop`. With `stop == end` this finishes the region.
+    pub fn scan_window(&mut self, start: u64, stop: u64, end: u64) -> Result<u64> {
         const CHUNK: usize = 4 << 20;
         let mut p = start;
+        if let Some(r) = self.resume_soft(start, end)? {
+            p = p.max(r);
+        }
         'outer: loop {
             crate::progress::at(p);
             if crate::progress::stopped() {
                 break;
             }
+            if p >= stop && stop < end {
+                return Ok(p);
+            }
+            self.settle(p)?;
             if p >= end {
                 // An anchor that was never confirmed may have hidden real data
                 // inside its (false) NAL unit: rescan from just after it.
@@ -314,7 +337,7 @@ impl<'a> Carver<'a> {
                 p = r;
                 continue;
             }
-            let want = CHUNK.min((end - p) as usize);
+            let want = CHUNK.min((stop - p) as usize);
             let w = self.scan.get(p, want + 8)?.to_vec();
             let lim = want.min(w.len().saturating_sub(7));
             if lim == 0 {
@@ -353,7 +376,73 @@ impl<'a> Carver<'a> {
             }
             p += lim as u64;
         }
+        Ok(p.max(stop))
+    }
+
+    /// Replaces the out-of-band parameter sets (more were found).
+    pub fn set_configs(&mut self, configs: Vec<VideoConfig>) {
+        self.configs = configs;
+    }
+
+    /// Start of the earliest stream that is not final yet (still growing or
+    /// not confirmed), if any. Everything found before it is in `results`.
+    pub fn undecided_start(&self) -> Option<u64> {
+        self.parked
+            .iter()
+            .chain(self.cur.iter())
+            .map(|s| s.start)
+            .min()
+    }
+
+    /// Writes the current stream once the scan is too far past its end for
+    /// it to continue. (It would otherwise wait for the next stream.)
+    fn settle(&mut self, p: u64) -> Result<()> {
+        if self.parked.is_none()
+            && self
+                .cur
+                .as_ref()
+                .is_some_and(|s| s.confirmed && !s.soft && p > s.end + self.opts.max_gap)
+        {
+            let s = self.cur.take().unwrap();
+            self.write_stream(s)?;
+        }
         Ok(())
+    }
+
+    /// Continues a stream whose following stopped at the soft limit, as if
+    /// it had not stopped. Returns the position reached.
+    fn resume_soft(&mut self, start: u64, end: u64) -> Result<Option<u64>> {
+        let Some(mut cur) = self.cur.take_if(|s| s.soft) else {
+            return Ok(None);
+        };
+        cur.soft = false;
+        if cur.end != start {
+            // The data after it turned out to belong to an intact file.
+            self.cur = Some(cur);
+            return Ok(None);
+        }
+        let at = match cur.framing {
+            Framing::LengthPrefixed => Some(cur.end),
+            Framing::AnnexB => {
+                let span = (end.saturating_sub(cur.end)).min(MAX_NAL + 6) as usize;
+                let b = self.follow.get(cur.end, span)?;
+                memchr::memmem::find(b, &[0, 0, 1]).map(|k| cur.end + k as u64)
+            }
+        };
+        let mut res = None;
+        if let Some(at) = at.filter(|&a| a < end) {
+            let (c, framing) = (cur.codec, cur.framing);
+            let (nals, run_end) = self.follow(c, framing, at, end, Mode::InStream(&mut cur.ctx))?;
+            if !nals.is_empty() {
+                cur.vcl_since_anchor += nals.iter().filter(|n| n.info.is_vcl).count();
+                cur.nals.extend(nals);
+                cur.end = run_end;
+                cur.soft = self.hit_soft;
+                res = Some(run_end);
+            }
+        }
+        self.cur = Some(cur);
+        Ok(res)
     }
 
     /// Drops an unconfirmed stream, restores the parked one and returns the
@@ -402,6 +491,7 @@ impl<'a> Carver<'a> {
                     cur.vcl_since_anchor += nals.iter().filter(|n| n.info.is_vcl).count();
                     cur.nals.extend(nals);
                     cur.end = run_end;
+                    cur.soft = self.hit_soft;
                     res = Some(run_end);
                 }
             }
@@ -466,6 +556,7 @@ impl<'a> Carver<'a> {
                     nals,
                     confirmed: strong,
                     vcl_since_anchor: 0,
+                    soft: false,
                 };
                 if strong {
                     self.flush()?;
@@ -541,6 +632,7 @@ impl<'a> Carver<'a> {
                     .map(|b| b.to_vec())
             })
             .collect::<Result<_>>()?;
+        self.consulted = true;
         let best = self.best_config(c, &heads);
         if best.is_none() {
             if strong_chain && nals.len() >= 3 {
@@ -649,6 +741,11 @@ impl<'a> Carver<'a> {
         let finder = memchr::memmem::Finder::new(&[0u8, 0, 1]);
         let mut q = at;
         let generic = matches!(mode, Mode::Generic);
+        // A chain being tested never gets near the soft limit (see multi.rs).
+        let hard = end;
+        let end = if generic { end } else { end.min(self.soft_end) };
+        let soft = end < hard;
+        self.hit_soft = false;
         loop {
             // Deciding whether a chain starts a stream needs only its first
             // few thousand units; the rest is followed as a continuation.
@@ -661,6 +758,7 @@ impl<'a> Carver<'a> {
             let (off, len, next) = match framing {
                 Framing::LengthPrefixed => {
                     if q + 6 > end {
+                        self.hit_soft = soft;
                         break;
                     }
                     let b = self.follow.get(q, 4)?;
@@ -668,7 +766,11 @@ impl<'a> Carver<'a> {
                         break;
                     }
                     let len = u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as u64;
-                    if !(2..=MAX_NAL).contains(&len) || q + 4 + len > end {
+                    if !(2..=MAX_NAL).contains(&len) {
+                        break;
+                    }
+                    if q + 4 + len > end {
+                        self.hit_soft = soft;
                         break;
                     }
                     (q + 4, len, q + 4 + len)
@@ -676,6 +778,7 @@ impl<'a> Carver<'a> {
                 Framing::AnnexB => {
                     let h = if q == at { q + 3 } else { q };
                     if h + 2 > end {
+                        self.hit_soft = soft;
                         break;
                     }
                     let span = ((end - h).min(MAX_NAL + 3)) as usize;
@@ -684,6 +787,7 @@ impl<'a> Carver<'a> {
                         break;
                     }
                     let Some(sc) = finder.find(&b[1..]).map(|x| x + 1) else {
+                        self.hit_soft = soft && end - h < MAX_NAL + 3;
                         break;
                     };
                     let mut e = sc;
@@ -829,6 +933,7 @@ impl<'a> Carver<'a> {
                         .map(|b| b.to_vec())
                 })
                 .collect::<Result<_>>()?;
+            self.consulted = true;
             match self.best_config(c, &heads) {
                 Some((cf, _)) if self.configs.iter().filter(|x| x.codec == c).count() > 1 => {
                     let mut cf = cf;
@@ -849,8 +954,8 @@ impl<'a> Carver<'a> {
             ));
         }
 
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self.ids.get();
+        self.ids.set(id + 1);
         let hint = self
             .hints
             .iter()

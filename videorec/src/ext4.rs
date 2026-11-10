@@ -115,17 +115,29 @@ impl<'a> Ext4<'a> {
             bail!("ext4 meta_bg volumes are not supported yet");
         }
         let is64 = incompat & 0x80 != 0;
-        let blocks =
-            le32(&sb, 4) as u64 | if is64 { (le32(&sb, 0x150) as u64) << 32 } else { 0 };
+        let blocks = le32(&sb, 4) as u64
+            | if is64 {
+                (le32(&sb, 0x150) as u64) << 32
+            } else {
+                0
+            };
         let first_data_block = le32(&sb, 0x14) as u64;
         let blocks_per_group = le32(&sb, 0x20) as u64;
         let inodes_per_group = le32(&sb, 0x28);
         let rev = le32(&sb, 0x4C);
-        let inode_size = if rev >= 1 { le16(&sb, 0x58) as usize } else { 128 };
+        let inode_size = if rev >= 1 {
+            le16(&sb, 0x58) as usize
+        } else {
+            128
+        };
         if blocks_per_group == 0 || inodes_per_group == 0 || !(128..=4096).contains(&inode_size) {
             bail!("ext: implausible super block");
         }
-        let desc = if is64 { (le16(&sb, 0xFE) as usize).max(32) } else { 32 };
+        let desc = if is64 {
+            (le16(&sb, 0xFE) as usize).max(32)
+        } else {
+            32
+        };
         let ngroups = (blocks - first_data_block).div_ceil(blocks_per_group);
         if ngroups > 1 << 22 {
             bail!("ext: implausible group count");
@@ -136,7 +148,13 @@ impl<'a> Ext4<'a> {
         )?;
         let mut groups = Vec::with_capacity(ngroups as usize);
         for g in gdt.chunks_exact(desc) {
-            let hi = |o: usize| if desc >= 64 { (le32(g, o) as u64) << 32 } else { 0 };
+            let hi = |o: usize| {
+                if desc >= 64 {
+                    (le32(g, o) as u64) << 32
+                } else {
+                    0
+                }
+            };
             groups.push((
                 le32(g, 0) as u64 | hi(0x20),
                 le32(g, 4) as u64 | hi(0x24),
@@ -387,7 +405,10 @@ impl<'a> Ext4<'a> {
             return true;
         }
         let rel = blk - self.first_data_block;
-        let (g, i) = ((rel / self.blocks_per_group) as usize, rel % self.blocks_per_group);
+        let (g, i) = (
+            (rel / self.blocks_per_group) as usize,
+            rel % self.blocks_per_group,
+        );
         maps.get(g)
             .and_then(|m| m.get((i / 8) as usize))
             .is_some_and(|b| b & (1 << (i % 8)) != 0)
@@ -482,7 +503,12 @@ impl<'a> Ext4<'a> {
             let ino = le32(b, p);
             let rec = le16(b, p + 4) as usize;
             let nl = b[p + 6] as usize;
-            if rec < 8 || !rec.is_multiple_of(4) || p + rec > b.len() || 8 + nl > rec || p + 8 + nl > lim {
+            if rec < 8
+                || !rec.is_multiple_of(4)
+                || p + rec > b.len()
+                || 8 + nl > rec
+                || p + 8 + nl > lim
+            {
                 return None;
             }
             let name = String::from_utf8_lossy(&b[p + 8..p + 8 + nl]).into_owned();
@@ -493,7 +519,11 @@ impl<'a> Ext4<'a> {
             let Some((ino, rec, name)) = parse(p, b.len()) else {
                 break;
             };
-            let used = if ino == 0 { 8 } else { (8 + name.len()).div_ceil(4) * 4 };
+            let used = if ino == 0 {
+                8
+            } else {
+                (8 + name.len()).div_ceil(4) * 4
+            };
             if ino != 0 && !name.is_empty() {
                 out.push((ino, name, false));
             }
@@ -508,7 +538,9 @@ impl<'a> Ext4<'a> {
                             && !n2.is_empty()
                             && n2 != "."
                             && n2 != ".."
-                            && !n2.chars().any(|c| c.is_control() || c == '/' || c == '\u{FFFD}') =>
+                            && !n2
+                                .chars()
+                                .any(|c| c.is_control() || c == '/' || c == '\u{FFFD}') =>
                     {
                         q += (8 + n2.len()).div_ceil(4) * 4;
                         out.push((i2, n2, true));
@@ -543,7 +575,9 @@ impl<'a> Ext4<'a> {
             if !d.is_dir() || d.flags & 0x1000_0000 != 0 {
                 continue; // not a directory, or data stored inline
             }
-            let Some(runs) = self.runs(&d, None)? else { continue };
+            let Some(runs) = self.runs(&d, None)? else {
+                continue;
+            };
             for &(s, n) in &runs {
                 for blk in s..s + n.min(1 << 16) {
                     let b = self.block(blk)?;
@@ -610,9 +644,9 @@ impl<'a> Ext4<'a> {
         }
         let per_block = (self.bs as usize / self.inode_size) as u32;
         let consider = |ino_no: u32,
-                            i: &Inode,
-                            method: &'static str,
-                            found: &mut HashMap<u32, DeletedFile>|
+                        i: &Inode,
+                        method: &'static str,
+                        found: &mut HashMap<u32, DeletedFile>|
          -> Result<()> {
             if !i.is_reg() || i.size == 0 || i.size > self.blocks * self.bs {
                 return Ok(());
@@ -719,7 +753,12 @@ impl<'a> Ext4<'a> {
                     if i.dtime == 0 && i.links > 0 {
                         continue;
                     }
-                    consider(ino_no, &i, "ext inode still holds its block list", &mut found)?;
+                    consider(
+                        ino_no,
+                        &i,
+                        "ext inode still holds its block list",
+                        &mut found,
+                    )?;
                 }
             }
         }

@@ -18,6 +18,7 @@ mod jdr;
 mod mjpeg;
 mod mp4;
 mod mpeg4v;
+mod multi;
 mod ntfs;
 mod preview;
 mod progress;
@@ -267,12 +268,19 @@ fn parse_range_gb(s: &str, len: u64) -> Result<(u64, u64)> {
         .split_once('-')
         .context("--range-gb expects START-END in GB, e.g. 0-100")?;
     let gb = |t: &str| -> Result<u64> {
-        let v: f64 = t.trim().parse().with_context(|| format!("not a number: {t}"))?;
+        let v: f64 = t
+            .trim()
+            .parse()
+            .with_context(|| format!("not a number: {t}"))?;
         anyhow::ensure!(v >= 0.0, "negative position");
         Ok((v * 1e9) as u64)
     };
     let a = gb(a)?.min(len);
-    let b = if b.trim().is_empty() { len } else { gb(b)?.min(len) };
+    let b = if b.trim().is_empty() {
+        len
+    } else {
+        gb(b)?.min(len)
+    };
     anyhow::ensure!(a < b, "empty range {s}");
     // Whole sectors.
     Ok((a & !511, (b.div_ceil(512) * 512).min(len)))
@@ -409,7 +417,11 @@ fn parse_size(s: &str) -> Result<u64> {
         Some('G') => (&t[..t.len() - 1], 1 << 30),
         _ => (t, 1),
     };
-    Ok(num.trim().parse::<u64>().with_context(|| format!("not a size: {s}"))? * mul)
+    Ok(num
+        .trim()
+        .parse::<u64>()
+        .with_context(|| format!("not a size: {s}"))?
+        * mul)
 }
 
 fn dump(image: &Path, offset: &str, len: &str, out: &Path) -> Result<()> {
@@ -436,7 +448,10 @@ fn guard_output(image: &Path, out: &Path) -> Result<()> {
         return Ok(());
     };
     let s = out.to_string_lossy();
-    let letter = s.chars().next().filter(|c| c.is_ascii_alphabetic() && s[1..].starts_with(':'));
+    let letter = s
+        .chars()
+        .next()
+        .filter(|c| c.is_ascii_alphabetic() && s[1..].starts_with(':'));
     match letter {
         Some(c) if io::disk_of_letter(c.to_ascii_uppercase()) == Some(n) => anyhow::bail!(
             "저장 위치 {}가 복구 대상 디스크 {n}에 있습니다. 덮어쓰기를 막기 위해 다른 디스크를 고르세요",
@@ -462,7 +477,7 @@ fn volumes(src: &Source) -> Result<Vec<Volume>> {
     Ok(v)
 }
 
-fn copy_range(src: &Source, start: u64, end: u64, path: &Path) -> Result<()> {
+pub(crate) fn copy_range(src: &Source, start: u64, end: u64, path: &Path) -> Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
     let mut p = start;
     let mut buf = vec![0u8; 4 << 20];
@@ -799,14 +814,24 @@ fn recover(
             .iter()
             .flat_map(|&(a, b)| covered.clone().gaps(a, b))
             .collect();
-        progress::stage("dvr", gaps.iter().map(|g| g.1 - g.0).sum(), clip_extra.quiet);
+        progress::stage(
+            "dvr",
+            gaps.iter().map(|g| g.1 - g.0).sum(),
+            clip_extra.quiet,
+        );
         let mut cov = Ranges::new();
         let mut st = dhav::Stats::default();
         let (chunks, older_frames) = dhav::scan(&src, &gaps, &mut cov, &mut st)?;
         progress::end_stage();
         let mut by_month = jdr::Stats::new();
-        let (mut got, discarded) =
-            jdr::write_clips(&src, &chunks, out, items.len() + 1, &clip_opts, &mut by_month)?;
+        let (mut got, discarded) = jdr::write_clips(
+            &src,
+            &chunks,
+            out,
+            items.len() + 1,
+            &clip_opts,
+            &mut by_month,
+        )?;
         let mut older = 0;
         for r in got.iter_mut() {
             if older_frames.contains(&r.source_start) {
@@ -826,70 +851,8 @@ fn recover(
         covered.normalize();
     }
 
-    // Stage 2: intact containers in the scanned regions.
-    let mut damaged_containers = 0usize;
-    if !no_containers {
-        let gaps: Vec<(u64, u64)> = regions
-            .iter()
-            .flat_map(|&(a, b)| covered.clone().gaps(a, b))
-            .collect();
-        progress::stage(
-            "files",
-            gaps.iter().map(|g| g.1 - g.0).sum(),
-            clip_extra.quiet,
-        );
-        let mut done = 0u64;
-        for &(a, b) in &regions {
-            for (s, e) in covered.clone().gaps(a, b) {
-                progress::region(s, done);
-                done += e - s;
-                let mut found = |c: container::Container| -> Result<u64> {
-                    if !c.intact {
-                        damaged_containers += 1;
-                        return Ok(0);
-                    }
-                    let id = items.len() + 1;
-                    let path = out.join(format!("carved_{id:05}_{:012x}.{}", c.start, c.kind));
-                    copy_range(&src, c.start, c.end, &path)?;
-                    covered.add(c.start, c.end);
-                    items.push(Recovered {
-                        id,
-                        kind: "carved_container".into(),
-                        output: path.file_name().unwrap().to_string_lossy().into(),
-                        sha256: report::sha256_file(&path)?,
-                        size: c.end - c.start,
-                        source_start: c.start,
-                        source_end: c.end,
-                        codec: c.config.as_ref().map(|x| x.codec.name().into()),
-                        width: c
-                            .config
-                            .as_ref()
-                            .and_then(|x| x.sps_info())
-                            .map(|i| i.width),
-                        height: c
-                            .config
-                            .as_ref()
-                            .and_then(|x| x.sps_info())
-                            .map(|i| i.height),
-                        duration_s: c.duration_s,
-                        created: c.created.clone(),
-                        status: "ok".into(),
-                        notes: if c.created.is_some() {
-                            "container structure verified; creation time from the MP4 header (recorder clock)".into()
-                        } else {
-                            "container structure verified".into()
-                        },
-                        ..Default::default()
-                    });
-                    Ok(c.end)
-                };
-                container::scan(&src, s, e, &mut configs, &mut found)?;
-            }
-        }
-        covered.normalize();
-    }
-
-    // Stage 3: frame-level carving of whatever is not yet covered.
+    // Stages 2 and 3 in one read: intact containers, H.264/H.265 streams,
+    // Motion-JPEG and MPEG-4 Part 2 in what is not yet covered (multi.rs).
     let opts = stream::Options {
         codecs: match codec_arg {
             CodecArg::Auto => vec![Codec::H264, Codec::H265],
@@ -901,98 +864,57 @@ fn recover(
         min_frames,
         keep_leading,
     };
-    let mut discarded = 0;
-    let mut chains_without_params = 0;
-    if !no_streams && !clip_extra.no_h26x {
-        let mut carver = stream::Carver::new(&src, &opts, &configs, &hints, out, items.len() + 1);
-        progress::stage(
-            "frames",
-            regions
-                .iter()
-                .flat_map(|&(a, b)| covered.gaps(a, b))
-                .map(|g| g.1 - g.0)
-                .sum(),
-            clip_extra.quiet,
-        );
-        let mut done = 0u64;
-        for &(a, b) in &regions {
-            for (s, e) in covered.gaps(a, b) {
-                progress::region(s, done);
-                done += e - s;
-                carver.scan_region(s, e)?;
-            }
-        }
-        carver.flush()?;
-        discarded = carver.discarded_small;
-        chains_without_params = carver.chains_without_params;
-        items.extend(carver.results);
-    }
-
-    // Stage 3b: Motion-JPEG runs in what is still not covered.
-    let mut mjpeg_runs_small = 0;
-    if !no_streams && !clip_extra.no_mjpeg && !progress::stopped() {
-        let mut cov = covered.clone();
-        for it in &items {
-            cov.add(it.source_start, it.source_end);
-        }
-        cov.normalize();
-        let mut jpegs = vec![];
-        progress::stage(
-            "jpeg",
-            regions
-                .iter()
-                .flat_map(|&(a, b)| cov.gaps(a, b))
-                .map(|g| g.1 - g.0)
-                .sum(),
-            clip_extra.quiet,
-        );
-        let mut done = 0u64;
-        for &(a, b) in &regions {
-            for (s, e) in cov.gaps(a, b) {
-                progress::region(s, done);
-                done += e - s;
-                mjpeg::scan(&src, s, e, &mut jpegs)?;
-            }
-        }
-        let (got, small) = mjpeg::write_runs(
-            &src,
-            &jpegs,
+    let mut want = multi::Want {
+        containers: !no_containers,
+        h26x: !no_streams && !clip_extra.no_h26x,
+        mjpeg: !no_streams && !clip_extra.no_mjpeg,
+        mpeg4: !no_streams && !clip_extra.no_mpeg4,
+    };
+    let mut damaged_containers = 0usize;
+    let (mut discarded, mut chains_without_params) = (0, 0);
+    let (mut mjpeg_runs_small, mut mpeg4_runs_small) = (0, 0);
+    let mut read_passes = 0;
+    let read_before = src.bytes_read();
+    let cache_mib = std::env::var("VIDEOREC_CACHE_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(512);
+    while want.containers || want.h26x || want.mjpeg || want.mpeg4 {
+        src.set_block_cache(cache_mib);
+        let claimed: Vec<(u64, u64)> = items
+            .iter()
+            .map(|i| (i.source_start, i.source_end))
+            .collect();
+        let params = multi::Params {
+            src: &src,
             out,
-            items.len() + 1,
-            max_gap_kib * 1024,
-            min_frames,
-            fps,
-        )?;
-        mjpeg_runs_small = small;
-        items.extend(got);
-    }
-
-    // Stage 3c: MPEG-4 Part 2 (XviD/DivX) in what is still not covered.
-    let mut mpeg4_runs_small = 0;
-    if !no_streams && !clip_extra.no_mpeg4 && !progress::stopped() {
-        let mut cov = covered.clone();
-        for it in &items {
-            cov.add(it.source_start, it.source_end);
+            regions: &regions,
+            opts: &opts,
+            hints: &hints,
+            ids: std::rc::Rc::new(std::cell::Cell::new(items.len() + 1)),
+            quiet: clip_extra.quiet,
+        };
+        let got = multi::pass(&params, want, &mut covered, &claimed, &mut configs)?;
+        src.set_block_cache(0);
+        read_passes += 1;
+        damaged_containers += got.damaged_containers;
+        discarded += got.discarded_small;
+        chains_without_params += got.chains_without_params;
+        mjpeg_runs_small += got.mjpeg_small;
+        mpeg4_runs_small += got.mpeg4_small;
+        items.extend(got.items);
+        if !got.redo || progress::stopped() {
+            break;
         }
-        cov.normalize();
-        let gaps: Vec<(u64, u64)> = regions.iter().flat_map(|&(a, b)| cov.gaps(a, b)).collect();
-        progress::stage(
-            "mpeg4",
-            gaps.iter().map(|g| g.1 - g.0).sum(),
-            clip_extra.quiet,
-        );
-        let (got, small) = mpeg4v::carve(
-            &src,
-            &gaps,
-            out,
-            items.len() + 1,
-            max_gap_kib * 1024,
-            min_frames,
-            fps,
-        )?;
-        mpeg4_runs_small = small;
-        items.extend(got);
+        // Parameter sets turned up after they were needed: the containers
+        // are done, carve again knowing all of them.
+        want.containers = false;
     }
+    summary.insert("read_passes".into(), read_passes.into());
+    summary.insert(
+        "carving_bytes_read".into(),
+        (src.bytes_read() - read_before).into(),
+    );
 
     live_map.sort_unstable_by_key(|x| x.0);
     for it in items.iter_mut() {

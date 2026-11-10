@@ -8,7 +8,7 @@ use crate::report::{self, Recovered};
 use anyhow::Result;
 use std::path::Path;
 
-const MAX_JPEG: usize = 8 << 20;
+pub(crate) const MAX_JPEG: usize = 8 << 20;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Jpeg {
@@ -91,13 +91,20 @@ pub fn parse(b: &[u8]) -> Option<(usize, u16, u16)> {
     }
 }
 
-/// Finds complete JPEG images in `[start, end)`.
-pub fn scan(src: &Source, start: u64, end: u64, found: &mut Vec<Jpeg>) -> Result<()> {
+/// Like `scan`, for images starting in `[start, stop)` of a region ending at
+/// `end`. Returns where to resume.
+pub fn scan_window(
+    src: &Source,
+    start: u64,
+    stop: u64,
+    end: u64,
+    found: &mut Vec<Jpeg>,
+) -> Result<u64> {
     const BLOCK: usize = 16 << 20;
     let finder = memchr::memmem::Finder::new(&[0xFF, 0xD8, 0xFF]);
     let mut pos = start;
     let mut buf = vec![0u8; BLOCK + MAX_JPEG];
-    while pos < end {
+    while pos < stop {
         crate::progress::at(pos);
         if crate::progress::stopped() {
             break;
@@ -108,11 +115,12 @@ pub fn scan(src: &Source, start: u64, end: u64, found: &mut Vec<Jpeg>) -> Result
             break;
         }
         let lim = if n < want { n } else { n.min(BLOCK) };
+        let lim = lim.min((stop - pos) as usize);
         let mut i = 0;
         let mut next = pos + lim as u64;
-        while let Some(k) = finder.find(&buf[i..lim]) {
+        while let Some(k) = finder.find(&buf[i.min(lim)..(lim + 2).min(n)]) {
             let at = i + k;
-            if let Some((len, w, h)) = parse(&buf[at..n]) {
+            if let Some((len, w, h)) = parse(&buf[at..n.min(at + MAX_JPEG)]) {
                 found.push(Jpeg {
                     start: pos + at as u64,
                     end: pos + (at + len) as u64,
@@ -130,7 +138,7 @@ pub fn scan(src: &Source, start: u64, end: u64, found: &mut Vec<Jpeg>) -> Result
         }
         pos = next.max(pos + 1);
     }
-    Ok(())
+    Ok(pos.max(stop))
 }
 
 /// Joins images of the same size whose gaps are at most `max_gap` bytes and

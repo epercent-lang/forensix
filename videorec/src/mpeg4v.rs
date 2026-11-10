@@ -162,22 +162,110 @@ fn trim_container_tail(d: &mut Vec<u8>) {
 }
 
 /// Finds VOPs in `[start, end)`. Each frame runs to the next start code.
-fn scan(
-    src: &Source,
-    start: u64,
-    end: u64,
-    vols: &mut Vec<Vol>,
-    frames: &mut Vec<Frame>,
-) -> Result<()> {
+/// Scanner state, kept between consecutive windows of one region.
+#[derive(Default)]
+pub struct Scanner {
+    vols: Vec<Vol>,
+    frames: Vec<Frame>,
+    cur_vol: Option<usize>,
+    /// Header bytes (VOS, VO, VOL, GOV) seen just before the next VOP.
+    pending_hdr: Option<u64>,
+    open: Option<(u64, bool, usize)>, // frame start, key, vol
+    last_code: u64,
+    /// Where the previous window stopped and where its region ends.
+    at: u64,
+    region_end: u64,
+}
+
+impl Scanner {
+    /// Ends the region being scanned: closes the open frame.
+    fn close(&mut self) {
+        if let Some((fs, key, v)) = self.open.take() {
+            let e = (fs + MAX_FRAME).min(self.region_end);
+            self.frames.push(Frame {
+                start: fs,
+                end: e,
+                key,
+                vol: v,
+            });
+        }
+        self.cur_vol = None;
+        self.pending_hdr = None;
+        self.last_code = 0;
+    }
+
+    /// Scans `[start, stop)` of a region ending at `end`. A call that starts
+    /// where the previous one stopped continues the same region.
+    pub fn scan_window(&mut self, src: &Source, start: u64, stop: u64, end: u64) -> Result<()> {
+        if start != self.at {
+            self.close();
+        }
+        self.region_end = end;
+        let r = scan(src, start, stop, end, self);
+        self.at = stop;
+        if stop >= end {
+            self.close();
+            self.at = u64::MAX;
+        }
+        r
+    }
+
+    /// The region being scanned turned out to end at `pos`, where the
+    /// previous window stopped.
+    pub fn end_region(&mut self, pos: u64) {
+        if self.at == pos {
+            self.region_end = pos;
+            self.close();
+            self.at = u64::MAX;
+        }
+    }
+
+    /// Drops frames that start inside `claimed` (found to be something else).
+    pub fn exclude(&mut self, claimed: &crate::ranges::Ranges) {
+        self.close();
+        self.frames
+            .retain(|f| claimed.containing(f.start).is_none());
+    }
+
+    /// Writes the runs found (after the last window).
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish(
+        mut self,
+        src: &Source,
+        out: &Path,
+        first_id: usize,
+        max_gap: u64,
+        min_frames: usize,
+        fps: Option<f64>,
+    ) -> Result<(Vec<Recovered>, usize)> {
+        self.close();
+        write_runs(
+            src,
+            &self.vols,
+            &self.frames,
+            out,
+            first_id,
+            max_gap,
+            min_frames,
+            fps,
+        )
+    }
+}
+
+fn scan(src: &Source, start: u64, stop: u64, end: u64, st: &mut Scanner) -> Result<()> {
     const BLOCK: usize = 16 << 20;
     let finder = memchr::memmem::Finder::new(&[0, 0, 1]);
     let mut pos = start;
-    let mut cur_vol: Option<usize> = None;
-    // Header bytes (VOS, VO, VOL, GOV) seen just before the next VOP.
-    let mut pending_hdr: Option<u64> = None;
-    let mut open: Option<(u64, bool, usize)> = None; // frame start, key, vol
-    let mut last_code = 0u64;
-    while pos < end {
+    let Scanner {
+        vols,
+        frames,
+        cur_vol,
+        pending_hdr,
+        open,
+        last_code,
+        ..
+    } = st;
+    while pos < stop {
         crate::progress::at(pos);
         if crate::progress::stopped() {
             break;
@@ -189,7 +277,8 @@ fn scan(
         }
         let last = buf.len() < BLOCK + 64;
         let lim = if last { buf.len() - 3 } else { BLOCK };
-        for k in finder.find_iter(&buf[..(lim + 3).min(buf.len())]) {
+        let lim = lim.min((stop - pos) as usize);
+        for k in finder.find_iter(&buf[..(lim + 2).min(buf.len())]) {
             if k + 4 > buf.len() {
                 break;
             }
@@ -208,10 +297,10 @@ fn scan(
                     vol: v,
                 });
             }
-            if at - last_code > MAX_FRAME {
-                pending_hdr = None;
+            if at - *last_code > MAX_FRAME {
+                *pending_hdr = None;
             }
-            last_code = at;
+            *last_code = at;
             if (0x20..=0x2F).contains(&code) {
                 let body = &buf[k + 4..(k + 64).min(buf.len())];
                 if let Some((w, h, res, inc_bits, fixed)) = parse_vol(body) {
@@ -240,7 +329,7 @@ fn scan(
                             vols.len() - 1
                         }
                     };
-                    cur_vol = Some(idx);
+                    *cur_vol = Some(idx);
                 }
                 pending_hdr.get_or_insert(at);
                 continue;
@@ -250,45 +339,31 @@ fn scan(
                 continue;
             }
             if is_vop
-                && let Some(v) = cur_vol
+                && let Some(v) = *cur_vol
                 && let Some(t) = vop_type(&buf[k + 4..(k + 16).min(buf.len())], &vols[v])
             {
                 let fs = pending_hdr.take().unwrap_or(at);
-                open = Some((fs, t == 0, v));
+                *open = Some((fs, t == 0, v));
                 continue;
             }
-            pending_hdr = None;
+            *pending_hdr = None;
         }
         pos += lim as u64;
-    }
-    if let Some((fs, key, v)) = open {
-        let e = (fs + MAX_FRAME).min(end);
-        frames.push(Frame {
-            start: fs,
-            end: e,
-            key,
-            vol: v,
-        });
     }
     Ok(())
 }
 
-/// Carves MPEG-4 Part 2 runs in the given regions and writes them as AVI.
 #[allow(clippy::too_many_arguments)]
-pub fn carve(
+fn write_runs(
     src: &Source,
-    regions: &[(u64, u64)],
+    vols: &[Vol],
+    frames: &[Frame],
     out: &Path,
     first_id: usize,
     max_gap: u64,
     min_frames: usize,
     fps: Option<f64>,
 ) -> Result<(Vec<Recovered>, usize)> {
-    let mut vols = vec![];
-    let mut frames = vec![];
-    for &(s, e) in regions {
-        scan(src, s, e, &mut vols, &mut frames)?;
-    }
     let mut items = vec![];
     let mut small = 0;
     let mut i = 0;

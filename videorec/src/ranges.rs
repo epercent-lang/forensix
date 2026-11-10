@@ -43,6 +43,23 @@ impl Ranges {
         self.sorted = true;
     }
 
+    /// Adds a range to a normalized set and keeps it normalized (cheap when
+    /// the range lies near the end of the set).
+    pub fn insert(&mut self, start: u64, end: u64) {
+        if end <= start {
+            return;
+        }
+        let i = self.v.partition_point(|r| r.1 < start);
+        let mut j = i;
+        let (mut s, mut e) = (start, end);
+        while j < self.v.len() && self.v[j].0 <= e {
+            s = s.min(self.v[j].0);
+            e = e.max(self.v[j].1);
+            j += 1;
+        }
+        self.v.splice(i..j, [(s, e)]);
+    }
+
     /// Range containing `pos`, if any. Requires `normalize()`.
     pub fn containing(&self, pos: u64) -> Option<(u64, u64)> {
         let i = self.v.partition_point(|r| r.1 <= pos);
@@ -93,5 +110,28 @@ mod tests {
         assert_eq!(r.gaps(0, 50), vec![(0, 10), (25, 30), (40, 50)]);
         assert_eq!(r.containing(24), Some((10, 25)));
         assert_eq!(r.containing(25), None);
+    }
+}
+
+#[cfg(test)]
+mod insert_tests {
+    use super::*;
+
+    #[test]
+    fn insert_keeps_normalized() {
+        let mut a = Ranges::new();
+        let mut b = Ranges::new();
+        let mut x = 12345u64;
+        for _ in 0..500 {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let s = (x >> 33) % 1000;
+            let e = s + (x >> 20) % 30;
+            a.insert(s, e);
+            b.add(s, e);
+            b.normalize();
+            assert_eq!(a.iter().collect::<Vec<_>>(), b.iter().collect::<Vec<_>>());
+        }
     }
 }

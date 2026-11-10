@@ -51,7 +51,10 @@ pub fn date_secs(d: u32) -> Option<i64> {
     if s > 59 || mi > 59 || h > 23 || !(1..=31).contains(&day) || !(1..=12).contains(&mo) {
         return None;
     }
-    Some(((days_from_civil(y as i64, mo as i64, day as i64) * 24 + h as i64) * 60 + mi as i64) * 60 + s as i64)
+    Some(
+        ((days_from_civil(y as i64, mo as i64, day as i64) * 24 + h as i64) * 60 + mi as i64) * 60
+            + s as i64,
+    )
 }
 
 /// Fields of one frame header.
@@ -76,7 +79,8 @@ pub fn parse(b: &[u8]) -> Option<Head> {
     }
     let len = le32(b, 12);
     let ext_len = b[22] as usize;
-    if len < (FIXED + TRAILER) as u32 || len > MAX_FRAME || (FIXED + ext_len + TRAILER) as u32 > len {
+    if len < (FIXED + TRAILER) as u32 || len > MAX_FRAME || (FIXED + ext_len + TRAILER) as u32 > len
+    {
         return None;
     }
     let mut h = Head {
@@ -256,7 +260,15 @@ fn finish(mut found: Vec<Found>, stats: &mut Stats) -> (Vec<Chunk>, HashSet<u64>
         win.push_back((f.off, f.head.secs));
     }
     // Same frame stored twice: keep one.
-    found.sort_by_key(|f| (f.head.channel, f.head.secs, f.head.number, f.head.len, f.off));
+    found.sort_by_key(|f| {
+        (
+            f.head.channel,
+            f.head.secs,
+            f.head.number,
+            f.head.len,
+            f.off,
+        )
+    });
     found.dedup_by_key(|f| (f.head.channel, f.head.secs, f.head.number, f.head.len));
     // Times within a second: frames in recording order, spaced by the rate.
     let mut out = Vec::with_capacity(found.len());
@@ -274,12 +286,19 @@ fn finish(mut found: Vec<Found>, stats: &mut Stats) -> (Vec<Chunk>, HashSet<u64>
             let hdr = (FIXED + f.head.ext_len) as u16;
             stats.frames += 1;
             stats.key_frames += (f.head.kind == 0xFD) as usize;
-            *stats.per_camera.entry(f.head.channel as u32 + 1).or_default() += 1;
+            *stats
+                .per_camera
+                .entry(f.head.channel as u32 + 1)
+                .or_default() += 1;
             out.push(Chunk {
                 off: f.off,
                 size: f.head.len - hdr as u32 - TRAILER as u32,
                 channel: f.head.channel,
-                kind: if f.head.kind == 0xFD { Kind::Key } else { Kind::Frame },
+                kind: if f.head.kind == 0xFD {
+                    Kind::Key
+                } else {
+                    Kind::Frame
+                },
                 fmt: (f.height << 20) | ((f.width & 0xFFF) << 8) | f.fps.min(255),
                 t_ms: s * 1000 + ms,
                 hdr,
@@ -308,6 +327,9 @@ mod tests {
         let h = parse(&b).expect("valid");
         assert_eq!((h.kind, h.channel, h.len, h.ext_len), (0xFD, 0, 165693, 20));
         assert_eq!((h.width, h.height, h.codec, h.fps), (1280, 720, 8, 30));
-        assert_eq!(crate::jdr::format_time(h.secs * 1000), "2024-05-21T11:06:43.000");
+        assert_eq!(
+            crate::jdr::format_time(h.secs * 1000),
+            "2024-05-21T11:06:43.000"
+        );
     }
 }

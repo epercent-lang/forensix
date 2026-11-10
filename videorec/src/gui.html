@@ -217,8 +217,8 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
       <p class="small muted" style="margin:0">시각과 카메라는 녹화기가 기록한 값으로 거릅니다. G-NET .jdr과 Dahua DVR에서 쓸 수 있습니다.</p>
       <div class="note" id="passNote" style="display:flex;flex-direction:column;gap:8px">
         <span><b>검사 시간:</b> <span id="passText"></span></span>
-        <span class="row"><button class="b sm" id="btnFast">H.264/H.265 프레임만 찾기 (한 번만 읽기)</button></span>
-        <span class="small">파일시스템 없이 프레임을 기록하는 DVR 디스크에 맞습니다. MP4/AVI 파일 조각 찾기도 꺼지므로, MP4로 녹화하는 블랙박스·카메라에서는 찾는 영상이 줄 수 있습니다.</span>
+        <span class="row"><button class="b sm" id="btnFast">H.264/H.265 프레임만 찾기</button></span>
+        <span class="small">대상을 줄여도 읽는 횟수는 같고 계산만 조금 줄어듭니다. MP4/AVI 파일 조각 찾기도 꺼지므로, MP4로 녹화하는 블랙박스·카메라에서는 찾는 영상이 줄 수 있습니다.</span>
       </div>
       <div class="grid2">
         <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">검사 구간 시작 (GB)</span><input type="number" id="rgA" min="0" step="1" placeholder="0 (처음)"></label>
@@ -547,15 +547,15 @@ function checkSpace() {
 function passes() {
   const p = [];
   if ($('tJdr').checked && (st.info?.recorder || []).some(r => r.system.startsWith('Dahua'))) p.push('dvr');
-  if ($('tCont').checked) p.push('files');
-  if ($('tStr').checked) p.push('frames');
-  if ($('tMjpeg').checked) p.push('jpeg');
-  if ($('tMp4v').checked) p.push('mpeg4');
+  const carve = $('tStr').checked || $('tMjpeg').checked || $('tMp4v').checked;
+  if (carve) p.push('video'); else if ($('tCont').checked) p.push('files');
   return p;
 }
 function passText() {
   const n = passes().length, size = st.info?.size;
-  let t = `선택한 대상으로 원본을 ${n}번 처음부터 끝까지 읽습니다. 대상마다 한 번씩 읽기 때문입니다.`;
+  let t = n > 1 ? `원본을 ${n}번 읽습니다. DVR 프레임(카메라·시각) 검사에 한 번, 나머지 대상(MP4/AVI, H.264/H.265, MJPEG, MPEG-4)은 모두 합쳐 한 번입니다.`
+    : `선택한 대상을 모두 원본 한 번 읽기로 함께 찾습니다.`;
+  t += ` 디스크 뒤쪽에서 새 영상 설정 정보(avcC/hvcC)가 나오면 프레임 찾기를 한 번 더 합니다.`;
   if (size) t += ` 원본 ${gb(size)}를 한 번 읽는 시간은 스캔을 시작하면 첫 단계의 남은 시간으로 나옵니다.`;
   $('passText').textContent = t;
 }
@@ -599,7 +599,7 @@ function startPoll() { clearInterval(st.poll); st.poll = setInterval(poll, 1000)
 async function poll() {
   let j; try { j = await api('/api/status'); } catch { return; }
   const m = (j.progress || '').match(/\[(\w+)\]\s+([\d.]+)%\s+([\d.]+)\/([\d.]+) GB\s+elapsed (\S+)\s+remaining (\S+)/);
-  let label = {scan: '녹화기 형식 검사', read: '세션 다시 읽기', files: 'MP4/AVI 파일 찾기', frames: 'H.264/H.265 프레임 찾기', jpeg: 'MJPEG 프레임 찾기', mpeg4: 'MPEG-4 프레임 찾기', dvr: 'DVR 프레임 찾기 (카메라·시각)'}[m?.[1]] || '';
+  let label = {scan: '녹화기 형식 검사', read: '세션 다시 읽기', files: 'MP4/AVI 파일 찾기', video: '영상 찾기 (파일·프레임을 한 번에)', frames: 'H.264/H.265 프레임 찾기', jpeg: 'MJPEG 프레임 찾기', mpeg4: 'MPEG-4 프레임 찾기', dvr: 'DVR 프레임 찾기 (카메라·시각)'}[m?.[1]] || '';
   const plan = st.plan || [], k = m ? plan.indexOf(m[1]) : -1;
   if (k >= 0 && plan.length > 1) label = `${k + 1}/${plan.length}단계 ${label}`;
   $('jobTitle').textContent = j.running ? (j.kind == 'export' ? '내보내는 중' : '스캔 중') + (label ? ' · ' + label : '')

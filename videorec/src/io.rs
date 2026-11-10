@@ -25,6 +25,19 @@ pub struct Source {
     /// Read-ahead window for small device reads (raw disks are not cached by
     /// the OS, and parsers read headers a few bytes at a time).
     cache: std::sync::Mutex<(u64, Vec<u8>)>,
+    /// Recently read 4 MiB blocks, while several scanners go over the same
+    /// part of the source one after another (see multi.rs).
+    blocks: std::sync::Mutex<Option<Blocks>>,
+    /// Bytes actually requested from the file or device.
+    raw_bytes: std::sync::atomic::AtomicU64,
+}
+
+const BLOCK: u64 = 4 << 20;
+
+struct Blocks {
+    cap: usize,
+    map: std::collections::HashMap<u64, Vec<u8>>,
+    order: std::collections::VecDeque<u64>,
 }
 
 const WINDOW: u64 = 1 << 20;
@@ -58,6 +71,8 @@ impl Source {
                     align,
                     bad: Default::default(),
                     cache: Default::default(),
+                    blocks: Default::default(),
+                    raw_bytes: Default::default(),
                 });
             }
         }
@@ -74,6 +89,8 @@ impl Source {
             align: 0,
             bad: Default::default(),
             cache: Default::default(),
+            blocks: Default::default(),
+            raw_bytes: Default::default(),
         })
     }
 
@@ -86,7 +103,52 @@ impl Source {
         self.bad.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Bytes requested from the file or device so far (re-reads included).
+    pub fn bytes_read(&self) -> u64 {
+        self.raw_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Keeps up to `mib` MiB of recently read blocks in memory (0: off).
+    pub fn set_block_cache(&self, mib: u64) {
+        *self.blocks.lock().unwrap() = (mib > 0).then(|| Blocks {
+            cap: (mib * (1 << 20) / BLOCK).max(2) as usize,
+            map: Default::default(),
+            order: Default::default(),
+        });
+    }
+
+    fn read_blocks(&self, bl: &mut Blocks, offset: u64, out: &mut [u8]) -> Result<usize> {
+        let mut done = 0;
+        while done < out.len() {
+            let pos = offset + done as u64;
+            let idx = pos / BLOCK;
+            if !bl.map.contains_key(&idx) {
+                let base = idx * BLOCK;
+                let mut v = vec![0u8; BLOCK.min(self.len - base) as usize];
+                let n = self.read_direct(base, &mut v)?;
+                v.truncate(n);
+                while bl.order.len() >= bl.cap {
+                    let old = bl.order.pop_front().unwrap();
+                    bl.map.remove(&old);
+                }
+                bl.order.push_back(idx);
+                bl.map.insert(idx, v);
+            }
+            let v = &bl.map[&idx];
+            let from = (pos - idx * BLOCK) as usize;
+            let n = (out.len() - done).min(v.len().saturating_sub(from));
+            if n == 0 {
+                break;
+            }
+            out[done..done + n].copy_from_slice(&v[from..from + n]);
+            done += n;
+        }
+        Ok(done)
+    }
+
     fn raw_read(&self, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        self.raw_bytes
+            .fetch_add(buf.len() as u64, std::sync::atomic::Ordering::Relaxed);
         #[cfg(unix)]
         return self.file.read_at(buf, offset);
         #[cfg(windows)]
@@ -100,6 +162,14 @@ impl Source {
             return Ok(0);
         }
         let want = buf.len().min((self.len - offset) as usize);
+        if let Some(bl) = self.blocks.lock().unwrap().as_mut() {
+            return self.read_blocks(bl, offset, &mut buf[..want]);
+        }
+        self.read_direct(offset, &mut buf[..want])
+    }
+
+    fn read_direct(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        let want = buf.len();
         if self.align != 0 {
             if (want as u64) < WINDOW / 4 {
                 return self.read_cached(offset, &mut buf[..want]);
@@ -373,12 +443,17 @@ mod win {
         // STORAGE_DEVICE_DESCRIPTOR: RemovableMedia at 10, VendorIdOffset at 12,
         // ProductIdOffset at 16 (offsets to NUL-terminated ASCII strings).
         let s = |at: usize| -> String {
-            let Some(o) = out.get(at..at + 4) else { return String::new() };
+            let Some(o) = out.get(at..at + 4) else {
+                return String::new();
+            };
             let o = u32::from_le_bytes(o.try_into().unwrap()) as usize;
             if o == 0 || o >= out.len() {
                 return String::new();
             }
-            let end = out[o..].iter().position(|&b| b == 0).map_or(out.len(), |e| o + e);
+            let end = out[o..]
+                .iter()
+                .position(|&b| b == 0)
+                .map_or(out.len(), |e| o + e);
             String::from_utf8_lossy(&out[o..end]).trim().to_string()
         };
         let model = format!("{} {}", s(12), s(16)).trim().to_string();
@@ -563,9 +638,15 @@ mod device_tests {
         dev.align = 4096;
         let mut seed = 7u64;
         for i in 0..400 {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let off = (seed >> 20) % (data.len() as u64 + 100);
-            let len = if i % 5 == 0 { (seed >> 7) as usize % (6 << 20) } else { (seed >> 9) as usize % 9000 };
+            let len = if i % 5 == 0 {
+                (seed >> 7) as usize % (6 << 20)
+            } else {
+                (seed >> 9) as usize % 9000
+            };
             let mut a = vec![0u8; len];
             let mut b = vec![1u8; len];
             let na = plain.read_at(off, &mut a).unwrap();

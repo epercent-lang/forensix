@@ -420,7 +420,11 @@ fn api(req: &Req, job: &Shared) -> Result<Value> {
         ("POST", "/api/mkdir") => {
             let b = body(req)?;
             let src = b["source"].as_str().unwrap_or("");
-            mkdir(b["path"].as_str().unwrap_or(""), b["name"].as_str().unwrap_or(""), src)
+            mkdir(
+                b["path"].as_str().unwrap_or(""),
+                b["name"].as_str().unwrap_or(""),
+                src,
+            )
         }
         _ => anyhow::bail!("unknown call {} {}", req.method, req.path),
     }
@@ -500,7 +504,10 @@ fn mkdir(parent: &str, name: &str, source: &str) -> Result<Value> {
     if let (true, Some(n), Some(c)) = (
         crate::io::is_device_path(src),
         crate::io::device_number(src),
-        parent.chars().next().filter(|_| parent.get(1..2) == Some(":")),
+        parent
+            .chars()
+            .next()
+            .filter(|_| parent.get(1..2) == Some(":")),
     ) {
         anyhow::ensure!(
             crate::io::disk_of_letter(c.to_ascii_uppercase()) != Some(n),
@@ -511,7 +518,9 @@ fn mkdir(parent: &str, name: &str, source: &str) -> Result<Value> {
         !name.is_empty()
             && name != "."
             && name != ".."
-            && !name.chars().any(|c| "\\/:*?\"<>|".contains(c) || c.is_control()),
+            && !name
+                .chars()
+                .any(|c| "\\/:*?\"<>|".contains(c) || c.is_control()),
         "폴더 이름에 쓸 수 없는 글자가 있습니다: \\ / : * ? \" < > |"
     );
     let parent = Path::new(parent);
@@ -576,7 +585,11 @@ fn info(path: &Path) -> Result<Value> {
     let out_base = device
         .then(|| std::env::current_exe().ok())
         .flatten()
-        .and_then(|e| e.parent().and_then(|p| p.parent()).map(|p| p.join("videorec_out")));
+        .and_then(|e| {
+            e.parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("videorec_out"))
+        });
     Ok(json!({
         "path": path.to_string_lossy(),
         "name": match &disk {
