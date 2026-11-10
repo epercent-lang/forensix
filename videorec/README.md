@@ -40,6 +40,15 @@ videorec recover card.img -o out/ --from "2026-11-01 08:00" --to "2026-11-01 10:
 AVI는 OpenDML 형식이라 1GB가 넘는 클립도 저장됩니다. AVI는 고정 프레임 속도라, 녹화 시각 간격은 MP4에서만 그대로 유지됩니다.
 Motion-JPEG 프레임이 이어져 있으면 MJPEG AVI로 복구합니다(`carved_mjpeg`). 프레임 속도를 모르면 10fps로 가정합니다(`--fps`로 지정).
 
+### 스캔 세션 저장 후 나중에 내보내기
+
+```bash
+videorec recover card.img -o out/ --save-session D:/sessions/card.json   # 세션 파일은 원본과 다른 디스크에
+videorec export D:/sessions/card.json -o out2/ --from 2026-11-01 --camera 1 --format avi
+```
+
+세션 파일에는 찾은 데이터의 위치만 들어 있고 영상은 없습니다. `export`는 원본 전체를 다시 읽지 않고 청크 헤더만 따라가므로 빠릅니다. 원본 크기와 앞뒤 1MiB의 해시가 다르면 거부합니다. 현재는 G-NET `.jdr` 결과만 저장합니다.
+
 ### G-NET 블랙박스 (`.jdr` 파일)
 
 카드에 `.jdr` 파일이 있으면 자동으로 G-NET 형식 처리가 켜집니다 (`--vendor jdr`로 강제, `--vendor none`으로 끔).

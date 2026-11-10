@@ -17,6 +17,7 @@ mod mp4;
 mod progress;
 mod ranges;
 mod report;
+mod session;
 mod stream;
 
 use anyhow::{Context, Result};
@@ -106,6 +107,36 @@ enum Cmd {
         #[arg(long)]
         max_bytes: Option<u64>,
     },
+    /// Write clips from a session saved with `recover --save-session`,
+    /// without scanning the source again (recorder formats only).
+    Export {
+        session: PathBuf,
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Source image or disk, if it moved since the session was saved.
+        #[arg(long)]
+        image: Option<PathBuf>,
+        #[arg(long, default_value_t = 2000)]
+        max_gap_ms: i64,
+        #[arg(long, default_value_t = 1)]
+        jdr_min_frames: usize,
+        #[arg(long)]
+        jdr_drop_without_key: bool,
+        #[arg(long)]
+        stats_only: bool,
+        #[arg(long, value_enum, default_value_t = FormatArg::Mp4)]
+        format: FormatArg,
+        #[arg(long, value_enum, default_value_t = GroupArg::None)]
+        group: GroupArg,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        camera: Option<String>,
+        #[arg(long, short)]
+        quiet: bool,
+    },
     /// Recover video into an output directory.
     Recover {
         image: PathBuf,
@@ -157,6 +188,10 @@ enum Cmd {
         /// No progress line.
         #[arg(long, short)]
         quiet: bool,
+        /// Save what the scan found (positions only, no video) to this file,
+        /// for `export` later without scanning again. Keep it off the source disk.
+        #[arg(long)]
+        save_session: Option<PathBuf>,
         /// Largest gap (KiB) between NAL runs still treated as one stream
         /// (interleaved audio, metadata).
         #[arg(long, default_value_t = 1024)]
@@ -184,6 +219,106 @@ struct ClipExtra {
     to: Option<String>,
     camera: Option<String>,
     quiet: bool,
+    save_session: Option<PathBuf>,
+}
+
+fn clip_opts(
+    x: &ClipExtra,
+    max_gap_ms: i64,
+    min_frames: usize,
+    drop_without_key: bool,
+    stats_only: bool,
+) -> Result<jdr::ClipOpts> {
+    let parse_t = |v: &Option<String>, end: bool| -> Result<Option<i64>> {
+        match v {
+            None => Ok(None),
+            Some(t) => jdr::parse_time(t, end).map(Some).with_context(|| {
+                format!("bad time {t:?}; use YYYY-MM-DD or \"YYYY-MM-DD hh:mm:ss\"")
+            }),
+        }
+    };
+    Ok(jdr::ClipOpts {
+        max_gap_ms,
+        min_frames,
+        keep_without_key: !drop_without_key,
+        dry_run: stats_only,
+        format: match x.format {
+            FormatArg::Mp4 => jdr::Format::Mp4,
+            FormatArg::Avi => jdr::Format::Avi,
+        },
+        group: match x.group {
+            GroupArg::None => jdr::Group::None,
+            GroupArg::Camera => jdr::Group::Camera,
+            GroupArg::Date => jdr::Group::Date,
+            GroupArg::CameraDate => jdr::Group::CameraDate,
+        },
+        from_ms: parse_t(&x.from, false)?,
+        to_ms: parse_t(&x.to, true)?,
+        cameras: match &x.camera {
+            None => vec![],
+            Some(c) => jdr::parse_cameras(c)
+                .with_context(|| format!("bad camera list {c:?}; use e.g. 1,3 or 1-2"))?,
+        },
+    })
+}
+
+/// Exports clips from a saved session without scanning again.
+fn export(
+    session_path: &Path,
+    image: Option<&Path>,
+    out: &Path,
+    o: &jdr::ClipOpts,
+    quiet: bool,
+) -> Result<()> {
+    let ses = session::Session::load(session_path)?;
+    let image = image
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(&ses.source));
+    let src = Source::open(&image)?;
+    ses.check(&src)?;
+    std::fs::create_dir_all(out).with_context(|| format!("cannot create {}", out.display()))?;
+    let mut items = vec![];
+    let mut stats = jdr::Stats::new();
+    let (mut discarded, mut older, mut total, mut broken) = (0, 0, 0, 0);
+    for v in &ses.jdr {
+        let mut chunks = Vec::with_capacity(v.chunks);
+        let mut prog =
+            progress::Progress::new("read", v.runs.iter().map(|r| r.1 - r.0).sum(), quiet);
+        broken += jdr::walk(&src, &v.runs, &mut chunks, &mut prog)?;
+        prog.finish();
+        total += chunks.len();
+        let (got, d, ol) = jdr::clips_with_pass_marks(
+            &src,
+            &chunks,
+            out,
+            items.len() + 1,
+            o,
+            &mut stats,
+            &v.files,
+        )?;
+        discarded += d;
+        older += ol;
+        items.extend(got);
+    }
+    let summary = serde_json::json!({
+        "source": image.display().to_string(), "source_size": src.len(),
+        "session": session_path.display().to_string(),
+        "jdr_chunks": total, "jdr_runs_not_matching_session": broken,
+        "jdr_clips_from_earlier_pass": older, "jdr_segments_discarded": discarded,
+        "jdr_by_month": stats,
+        "tool": format!("videorec {}", env!("CARGO_PKG_VERSION")),
+    });
+    std::fs::write(
+        out.join("report.json"),
+        serde_json::to_string_pretty(&serde_json::json!({"summary": summary, "items": items}))?,
+    )?;
+    report::write_csv(&out.join("report.csv"), &items)?;
+    println!(
+        "{} items; report: {}",
+        items.len(),
+        out.join("report.json").display()
+    );
+    Ok(())
 }
 
 fn volumes(src: &Source) -> Result<Vec<Volume>> {
@@ -442,38 +577,15 @@ fn recover(
     let mut jdr_chunks_total = 0usize;
     let mut jdr_older = 0usize;
     let mut jdr_stats = jdr::Stats::new();
-    let parse_t = |v: &Option<String>, end: bool| -> Result<Option<i64>> {
-        match v {
-            None => Ok(None),
-            Some(t) => jdr::parse_time(t, end).map(Some).with_context(|| {
-                format!("bad time {t:?}; use YYYY-MM-DD or \"YYYY-MM-DD hh:mm:ss\"")
-            }),
-        }
-    };
-    let clip_opts = jdr::ClipOpts {
+    let clip_opts = clip_opts(
+        &clip_extra,
         max_gap_ms,
-        min_frames: jdr_min_frames,
-        keep_without_key: !jdr_drop_without_key,
-        dry_run: stats_only,
-        format: match clip_extra.format {
-            FormatArg::Mp4 => jdr::Format::Mp4,
-            FormatArg::Avi => jdr::Format::Avi,
-        },
-        group: match clip_extra.group {
-            GroupArg::None => jdr::Group::None,
-            GroupArg::Camera => jdr::Group::Camera,
-            GroupArg::Date => jdr::Group::Date,
-            GroupArg::CameraDate => jdr::Group::CameraDate,
-        },
-        from_ms: parse_t(&clip_extra.from, false)?,
-        to_ms: parse_t(&clip_extra.to, true)?,
-        cameras: match &clip_extra.camera {
-            None => vec![],
-            Some(c) => jdr::parse_cameras(c)
-                .with_context(|| format!("bad camera list {c:?}; use e.g. 1,3 or 1-2"))?,
-        },
-    };
+        jdr_min_frames,
+        jdr_drop_without_key,
+        stats_only,
+    )?;
     let (no_containers, no_streams) = (no_containers || stats_only, no_streams || stats_only);
+    let mut session_vols = vec![];
     for &(a, b) in &jdr_vols {
         let mut chunks = vec![];
         let mut cov = Ranges::new();
@@ -488,46 +600,35 @@ fn recover(
         }
         prog.finish();
         jdr_chunks_total += chunks.len();
-        let (mut got, d) = jdr::write_clips(
+        let (got, d, older) = jdr::clips_with_pass_marks(
             &src,
             &chunks,
             out,
             items.len() + 1,
             &clip_opts,
             &mut jdr_stats,
+            &jdr_files,
         )?;
         jdr_discarded += d;
-        // Time of the first chunk of each live file = start of the pass now
-        // in that file; clips there with earlier times are left from a
-        // previous pass of the ring.
-        let first_time: std::collections::HashMap<u64, i64> =
-            chunks.iter().map(|c| (c.off, c.t_ms)).collect();
-        let mut files: Vec<(u64, u64, i64)> = jdr_files
-            .iter()
-            .filter_map(|&(s, e)| first_time.get(&(s + 0x800)).map(|&t| (s, e, t)))
-            .collect();
-        files.sort_unstable();
-        for r in got.iter_mut() {
-            let i = files.partition_point(|f| f.0 <= r.source_start);
-            let Some(&(_, fend, t0)) = i.checked_sub(1).and_then(|k| files.get(k)) else {
-                continue;
-            };
-            if r.source_start < fend
-                && r.start_time.as_deref() < Some(jdr::format_time(t0).as_str())
-            {
-                jdr_older += 1;
-                r.notes.push_str(&format!(
-                    "; recorded before the current pass of this file began ({}) — left over from an earlier pass of the ring",
-                    jdr::format_time(t0)
-                ));
-            }
-        }
+        jdr_older += older;
+        cov.normalize();
+        session_vols.push(session::JdrVolume {
+            offset: a,
+            end: b,
+            runs: cov.iter().collect(),
+            files: jdr_files.clone(),
+            chunks: chunks.len(),
+        });
         items.extend(got);
         for (s, e) in cov.iter() {
             covered.add(s, e);
         }
     }
     covered.normalize();
+    if let Some(p) = &clip_extra.save_session {
+        session::Session::new(&src, image, session_vols)?.save(p)?;
+        eprintln!("session saved: {}", p.display());
+    }
     if !jdr_vols.is_empty() {
         summary.insert("jdr_chunks".into(), jdr_chunks_total.into());
         summary.insert("jdr_clips_from_earlier_pass".into(), jdr_older.into());
@@ -789,6 +890,39 @@ fn extract(image: &Path, path: &str, out: &Path, max_bytes: Option<u64>) -> Resu
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Export {
+            session,
+            out,
+            image,
+            max_gap_ms,
+            jdr_min_frames,
+            jdr_drop_without_key,
+            stats_only,
+            format,
+            group,
+            from,
+            to,
+            camera,
+            quiet,
+        } => {
+            let x = ClipExtra {
+                format,
+                group,
+                from,
+                to,
+                camera,
+                quiet,
+                save_session: None,
+            };
+            let o = clip_opts(
+                &x,
+                max_gap_ms,
+                jdr_min_frames,
+                jdr_drop_without_key,
+                stats_only,
+            )?;
+            export(&session, image.as_deref(), &out, &o, quiet)
+        }
         Cmd::Info { image } => info(&image),
         Cmd::List { image, out } => list(&image, out.as_deref()),
         Cmd::Extract {
@@ -815,6 +949,7 @@ fn main() -> Result<()> {
             to,
             camera,
             quiet,
+            save_session,
             max_gap_kib,
             min_frames,
             keep_leading,
@@ -840,6 +975,7 @@ fn main() -> Result<()> {
                 to,
                 camera,
                 quiet,
+                save_session,
             },
             max_gap_kib,
             min_frames,

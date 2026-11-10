@@ -213,6 +213,77 @@ pub fn scan(
     Ok(())
 }
 
+/// Re-reads chunk headers along runs found by an earlier `scan` (from a
+/// saved session): one small read per chunk instead of reading all data.
+pub fn walk(
+    src: &Source,
+    runs: &[(u64, u64)],
+    chunks: &mut Vec<Chunk>,
+    progress: &mut crate::progress::Progress,
+) -> Result<usize> {
+    let mut broken = 0;
+    let mut b = [0u8; HEADER + 4];
+    for &(start, end) in runs {
+        let mut pos = start;
+        while pos + (HEADER as u64) < end {
+            if src.read_at(pos, &mut b)? < b.len() {
+                break;
+            }
+            match parse_header(&b, pos) {
+                Some(c) if c.end() <= end => {
+                    chunks.push(c);
+                    pos = c.end();
+                }
+                _ => {
+                    broken += 1;
+                    break;
+                }
+            }
+        }
+        progress.add(end - start);
+    }
+    Ok(broken)
+}
+
+/// Writes clips and marks those recorded before the current ring pass of
+/// the `.jdr` file they start in. `files` holds (start, end) of each live
+/// `.jdr` file. Returns (items, discarded segments, earlier-pass clips).
+pub fn clips_with_pass_marks(
+    src: &Source,
+    chunks: &[Chunk],
+    out: &Path,
+    first_id: usize,
+    o: &ClipOpts,
+    stats: &mut Stats,
+    files: &[(u64, u64)],
+) -> Result<(Vec<Recovered>, usize, usize)> {
+    let (mut got, discarded) = write_clips(src, chunks, out, first_id, o, stats)?;
+    // Time of the first chunk of each live file = start of the pass now in
+    // that file; clips there with earlier times are left from a previous pass.
+    let first_time: std::collections::HashMap<u64, i64> =
+        chunks.iter().map(|c| (c.off, c.t_ms)).collect();
+    let mut files: Vec<(u64, u64, i64)> = files
+        .iter()
+        .filter_map(|&(s, e)| first_time.get(&(s + 0x800)).map(|&t| (s, e, t)))
+        .collect();
+    files.sort_unstable();
+    let mut older = 0;
+    for r in got.iter_mut() {
+        let i = files.partition_point(|f| f.0 <= r.source_start);
+        let Some(&(_, fend, t0)) = i.checked_sub(1).and_then(|k| files.get(k)) else {
+            continue;
+        };
+        if r.source_start < fend && r.start_time.as_deref() < Some(format_time(t0).as_str()) {
+            older += 1;
+            r.notes.push_str(&format!(
+                "; recorded before the current pass of this file began ({}) — left over from an earlier pass of the ring",
+                format_time(t0)
+            ));
+        }
+    }
+    Ok((got, discarded, older))
+}
+
 /// Splits an Annex B payload into NAL units (without start codes).
 fn split_nals(p: &[u8]) -> Vec<&[u8]> {
     let f = memchr::memmem::Finder::new(&[0u8, 0, 1]);
