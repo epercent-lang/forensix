@@ -32,6 +32,11 @@ button.p:disabled{background:#C3C8D2;color:#4A5060;cursor:not-allowed}
 button.b:focus-visible,button.p:focus-visible{outline:2px solid #1F4FB8;outline-offset:2px}
 label.opt{display:flex;gap:10px;align-items:flex-start;min-height:36px}
 label.opt input{margin-top:4px}
+.srcTab.on{background:#1F2328;color:#fff;border-color:#1F2328}
+.picklist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.picklist button{width:100%;text-align:left;display:flex;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid #D9DCE1;border-radius:8px;background:#fff;cursor:pointer}
+.picklist button:hover{border-color:#1F2328}
+.picklist button:disabled{opacity:.55;cursor:not-allowed}
 fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
 legend{font-weight:500;margin-bottom:6px}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
@@ -118,14 +123,24 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
   <section class="col">
     <div>
       <h1>복구할 원본을 고르세요</h1>
-      <p class="muted" style="margin:6px 0 0">디스크 이미지(.raw, .img, .dd)를 고르면 파일시스템과 녹화 형식을 확인합니다.</p>
+      <p class="muted" style="margin:6px 0 0">연결한 물리 디스크나 디스크 이미지(.raw, .img, .dd)를 고르면 파일시스템과 녹화 형식을 확인합니다.</p>
     </div>
     <div class="card">
-      <label for="imgPath" style="font-weight:500">이미지 파일</label>
+      <div class="row" role="tablist">
+        <button class="b srcTab" data-src="disk" role="tab">💽 물리 디스크</button>
+        <button class="b srcTab" data-src="file" role="tab">📄 이미지 파일</button>
+      </div>
+      <div id="srcDisk" hidden>
+        <div class="row"><span class="small muted" style="flex:1">번호는 Windows 디스크 관리의 "디스크 N"과 같습니다. 읽기만 하고 디스크에는 쓰지 않습니다.</span><button class="b sm" id="btnDisks">새로 고침</button></div>
+        <ul id="diskList" class="picklist"></ul>
+      </div>
+      <div id="srcFile">
+      <label for="imgPath" style="font-weight:500">원본 경로</label>
       <div class="row">
         <input type="text" id="imgPath" class="mono" placeholder="예: E:\Claude\6456.raw">
         <button class="b" data-browse="imgPath" data-files="1">찾아보기</button>
         <button class="p" id="btnInfo">확인</button>
+      </div>
       </div>
       <div id="infoErr" class="err" hidden></div>
     </div>
@@ -137,7 +152,6 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
         <button class="b" id="btnSes">내보내기로</button>
       </div>
     </div>
-    <p class="small muted" style="margin:0">실제 장치를 직접 여는 기능은 아직 개발 중입니다. 먼저 장치를 이미지로 떠서 여세요.</p>
   </section>
   <aside>
     <div class="card" id="infoCard" hidden>
@@ -172,7 +186,9 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
           <label class="opt"><input type="checkbox" id="tFs" checked><span>삭제된 파일 (파일시스템 기록)</span></label>
           <label class="opt"><input type="checkbox" id="tJdr" checked><span>녹화기 고유 형식 (G-NET .jdr)</span></label>
           <label class="opt"><input type="checkbox" id="tCont" checked><span>MP4 / AVI 파일 조각</span></label>
-          <label class="opt"><input type="checkbox" id="tStr" checked><span>H.264 / H.265 / MJPEG 프레임</span></label>
+          <label class="opt"><input type="checkbox" id="tStr" checked><span>H.264 / H.265 프레임</span></label>
+          <label class="opt"><input type="checkbox" id="tMjpeg" checked><span>MJPEG 프레임</span></label>
+          <label class="opt"><input type="checkbox" id="tMp4v" checked><span>MPEG-4 (XviD) 프레임</span></label>
           <label class="opt"><input type="checkbox" id="tNoKey" checked><span>키프레임 없는 조각도 보관 (화면이 깨질 수 있음)</span></label>
           <label class="opt"><input type="checkbox" id="tAudio" checked><span>소리 넣기 (.jdr)</span></label>
         </fieldset>
@@ -183,6 +199,16 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
         <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">카메라</span><input type="text" id="cams" placeholder="전체 (예: 1,3 또는 1-2)"></label>
       </div>
       <p class="small muted" style="margin:0">시각과 카메라는 녹화기가 기록한 값으로 거릅니다. 지금은 G-NET .jdr에서만 쓸 수 있습니다.</p>
+      <div class="note" id="passNote" style="display:flex;flex-direction:column;gap:8px">
+        <span><b>검사 시간:</b> <span id="passText"></span></span>
+        <span class="row"><button class="b sm" id="btnFast">H.264/H.265 프레임만 찾기 (한 번만 읽기)</button></span>
+        <span class="small">파일시스템 없이 프레임을 기록하는 DVR 디스크에 맞습니다. MP4/AVI 파일 조각 찾기도 꺼지므로, MP4로 녹화하는 블랙박스·카메라에서는 찾는 영상이 줄 수 있습니다.</span>
+      </div>
+      <div class="grid2">
+        <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">검사 구간 시작 (GB)</span><input type="number" id="rgA" min="0" step="1" placeholder="0 (처음)"></label>
+        <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">검사 구간 끝 (GB)</span><input type="number" id="rgB" min="0" step="1" placeholder="끝까지"></label>
+      </div>
+      <p class="small muted" style="margin:0">큰 디스크는 먼저 앞부분(예: 0~50 GB)만 검사해 결과를 확인한 뒤 전체를 검사할 수 있습니다. 프레임 카빙에만 적용됩니다.</p>
       <div class="grid2">
         <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">파일 형식</span>
           <select id="fmt"><option value="avi">AVI (대부분의 플레이어에서 소리까지 재생)</option><option value="mp4">MP4</option></select></label>
@@ -317,7 +343,7 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
     <h2 id="brTitle">찾아보기</h2>
     <div class="row"><button class="b" id="brUp">위로</button><span id="brPath" class="mono small" style="flex:1;word-break:break-all"></span></div>
     <ul id="brList"></ul>
-    <div class="row"><button class="b" id="brCancel">닫기</button><button class="p" id="brPick" style="margin-left:auto">이 폴더 선택</button></div>
+    <div class="row"><button class="b" id="brCancel">닫기</button><button class="b" id="brNew" hidden>새 폴더</button><button class="p" id="brPick" style="margin-left:auto">이 폴더 선택</button></div>
   </div>
 </div>
 
@@ -367,15 +393,36 @@ async function brOpen(path) {
 }
 document.querySelectorAll('[data-browse]').forEach(b => b.onclick = () => {
   brTarget = b.dataset.browse; brFiles = !!b.dataset.files;
-  $('brPick').hidden = brFiles; $('browser').hidden = false;
+  $('brPick').hidden = brFiles; $('brNew').hidden = brFiles; $('browser').hidden = false;
   const v = $(brTarget).value.trim();
   brOpen(v ? (brFiles ? v.replace(/[\\/][^\\/]*$/, '') : v) : '');
 });
 $('brCancel').onclick = () => $('browser').hidden = true;
+$('brNew').onclick = async () => {
+  if (!brCur) { alert('먼저 드라이브를 여세요.'); return; }
+  const name = (prompt('새 폴더 이름', '복구결과') || '').trim(); if (!name) return;
+  try { const j = await api('/api/mkdir', {path: brCur, name, source: st.info?.path || $('imgPath').value.trim()}); await brOpen(j.path); }
+  catch (e) { alert(e.message); }
+};
 $('brPick').onclick = () => { if (brCur) { $(brTarget).value = brCur; $(brTarget).dispatchEvent(new Event('input')); } $('browser').hidden = true; };
 document.addEventListener('keydown', e => { if (e.key == 'Escape') $('browser').hidden = true; });
 
 // ---- 1 source
+function srcTab(k) {
+  document.querySelectorAll('.srcTab').forEach(b => b.classList.toggle('on', b.dataset.src == k));
+  $('srcDisk').hidden = k != 'disk'; $('srcFile').hidden = k != 'file';
+  if (k == 'disk') loadDisks();
+}
+document.querySelectorAll('.srcTab').forEach(b => b.onclick = () => srcTab(b.dataset.src));
+async function loadDisks() {
+  $('diskList').innerHTML = '<li class="small muted">디스크를 찾는 중…</li>';
+  let j; try { j = await api('/api/disks'); } catch (e) { $('diskList').innerHTML = `<li class="err">${esc(e.message)}</li>`; return; }
+  if (!j.disks.length) { $('diskList').innerHTML = '<li class="small muted">찾은 디스크가 없습니다. Windows에서만 쓸 수 있습니다.</li>'; return; }
+  $('diskList').innerHTML = j.disks.map((d, i) => `<li><button data-i="${i}" ${d.readable ? '' : 'disabled'}><span>${esc(d.label)}</span><span class="small muted">${gb(d.size)}</span></button></li>`).join('')
+    + (j.disks.some(d => !d.readable) ? '<li class="small muted">"관리자 권한 필요" 디스크는 이 프로그램을 마우스 오른쪽 버튼 › 관리자 권한으로 실행해야 열립니다.</li>' : '');
+  $('diskList').querySelectorAll('button').forEach(b => b.onclick = () => { $('imgPath').value = j.disks[+b.dataset.i].path; $('btnInfo').onclick(); });
+}
+$('btnDisks').onclick = loadDisks;
 $('btnInfo').onclick = async () => {
   const p = $('imgPath').value.trim(); if (!p) return;
   $('infoErr').hidden = true; $('btnInfo').disabled = true; $('btnInfo').textContent = '확인 중…';
@@ -395,7 +442,7 @@ $('btnInfo').onclick = async () => {
     $('iDetail').textContent = d; $('infoCard').hidden = false;
     const stamp = 'gui_' + new Date().toISOString().slice(0,16).replace(/[-:T]/g, '');
     if (!$('outDir').value) $('outDir').value = j.out_base ? join(j.out_base, stamp) : join(p.replace(/[\\/][^\\/]*$/, ''), 'videorec_out' + sep(p) + stamp);
-    checkSame();
+    checkSame(); passText();
   } catch (e) { $('infoErr').textContent = e.message; $('infoErr').hidden = false; }
   $('btnInfo').disabled = false; $('btnInfo').textContent = '확인';
 };
@@ -410,6 +457,22 @@ function checkSame() {
   $('sameDisk').hidden = !(onDisk || (a && a == b));
 }
 $('outDir').oninput = checkSame;
+function passes() {
+  const p = [];
+  if ($('tCont').checked) p.push('files');
+  if ($('tStr').checked) p.push('frames');
+  if ($('tMjpeg').checked) p.push('jpeg');
+  if ($('tMp4v').checked) p.push('mpeg4');
+  return p;
+}
+function passText() {
+  const n = passes().length, size = st.info?.size;
+  let t = `선택한 대상으로 원본을 ${n}번 처음부터 끝까지 읽습니다. 대상마다 한 번씩 읽기 때문입니다.`;
+  if (size) t += ` 원본 ${gb(size)}를 한 번 읽는 시간은 스캔을 시작하면 첫 단계의 남은 시간으로 나옵니다.`;
+  $('passText').textContent = t;
+}
+['tCont', 'tStr', 'tMjpeg', 'tMp4v'].forEach(id => $(id).addEventListener('change', passText));
+$('btnFast').onclick = () => { $('tCont').checked = false; $('tMjpeg').checked = false; $('tMp4v').checked = false; $('tStr').checked = true; passText(); };
 const tval = id => $(id).value ? $(id).value.replace('T', ' ') : null;
 $('btnScan').onclick = async () => {
   const img = $('imgPath').value.trim(), out = $('outDir').value.trim();
@@ -421,7 +484,15 @@ $('btnScan').onclick = async () => {
   if (!$('tFs').checked) a.push('--no-fs');
   if (!$('tJdr').checked) a.push('--vendor', 'none');
   if (!$('tCont').checked) a.push('--no-containers');
-  if (!$('tStr').checked) a.push('--no-streams');
+  if (!$('tStr').checked && !$('tMjpeg').checked && !$('tMp4v').checked) a.push('--no-streams');
+  else {
+    if (!$('tStr').checked) a.push('--no-h26x');
+    if (!$('tMjpeg').checked) a.push('--no-mjpeg');
+    if (!$('tMp4v').checked) a.push('--no-mpeg4');
+  }
+  const rA = $('rgA').value.trim(), rB = $('rgB').value.trim();
+  if (rA || rB) a.push('--range-gb', `${rA || 0}-${rB}`);
+  st.plan = passes();
   if (!$('tNoKey').checked) a.push('--jdr-drop-without-key');
   if (!$('tAudio').checked) a.push('--no-audio');
   if (tval('from')) a.push('--from', tval('from'));
@@ -438,12 +509,21 @@ $('btnStop').onclick = async () => {
 function startPoll() { clearInterval(st.poll); st.poll = setInterval(poll, 1000); poll(); }
 async function poll() {
   let j; try { j = await api('/api/status'); } catch { return; }
-  const m = (j.progress || '').match(/\[(\w+)\]\s+([\d.]+)%.*elapsed (\S+)\s+remaining (\S+)/);
-  const label = {scan: '녹화기 형식 검사', read: '세션 다시 읽기', files: 'MP4/AVI 파일 찾기', frames: 'H.264/H.265 프레임 찾기', jpeg: 'MJPEG 프레임 찾기'}[m?.[1]] || '';
+  const m = (j.progress || '').match(/\[(\w+)\]\s+([\d.]+)%\s+([\d.]+)\/([\d.]+) GB\s+elapsed (\S+)\s+remaining (\S+)/);
+  let label = {scan: '녹화기 형식 검사', read: '세션 다시 읽기', files: 'MP4/AVI 파일 찾기', frames: 'H.264/H.265 프레임 찾기', jpeg: 'MJPEG 프레임 찾기', mpeg4: 'MPEG-4 프레임 찾기'}[m?.[1]] || '';
+  const plan = st.plan || [], k = m ? plan.indexOf(m[1]) : -1;
+  if (k >= 0 && plan.length > 1) label = `${k + 1}/${plan.length}단계 ${label}`;
   $('jobTitle').textContent = j.running ? (j.kind == 'export' ? '내보내는 중' : '스캔 중') + (label ? ' · ' + label : '')
     : j.exit == null ? '대기 중' : j.exit == 0 ? '끝났습니다' : `멈췄습니다 (코드 ${j.exit})`;
   $('jobBar').style.width = (j.running ? (m ? m[2] : 3) : j.exit == 0 ? 100 : 0) + '%';
-  $('jobTiming').textContent = m ? `${m[2]}% · 지난 시간 ${m[3]} · 남은 시간 ${m[4]}` : j.elapsed_s != null ? `지난 시간 ${dur(j.elapsed_s)}` : '';
+  let timing = '';
+  if (m) {
+    const secs = t => t.split(':').reduce((a, x) => a * 60 + +x, 0);
+    timing = `이 단계 ${m[2]}% · 지난 시간 ${m[5]} · 이 단계 남은 시간 ${m[6]}`;
+    const later = k >= 0 ? plan.length - k - 1 : 0, rate = +m[3] / Math.max(1, secs(m[5]));
+    if (later > 0 && rate > 0 && m[6] != '?') timing += ` · 전체 남은 시간 최대 약 ${dur(secs(m[6]) + later * (+m[4]) / rate)} (남은 ${later}단계 포함)`;
+  } else if (j.elapsed_s != null) timing = `지난 시간 ${dur(j.elapsed_s)}`;
+  $('jobTiming').textContent = timing;
   $('jobLog').textContent = j.lines.join('\n'); $('jobLog').scrollTop = 1e9;
   $('btnStop').hidden = !j.running; $('btnScan').disabled = j.running;
   if (!j.running) $('btnStop').textContent = '멈추기 (찾은 것까지 저장)';

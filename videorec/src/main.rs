@@ -228,7 +228,37 @@ enum Cmd {
         no_containers: bool,
         #[arg(long)]
         no_streams: bool,
+        /// Skip the H.264/H.265 frame pass.
+        #[arg(long)]
+        no_h26x: bool,
+        /// Skip the Motion-JPEG pass (one more full read of the source).
+        #[arg(long)]
+        no_mjpeg: bool,
+        /// Skip the MPEG-4 Part 2 pass (one more full read of the source).
+        #[arg(long)]
+        no_mpeg4: bool,
+        /// Carve only this part of the source, in GB (10^9 bytes) from the
+        /// start: e.g. 0-100, or 3500- for the rest of the disk.
+        #[arg(long)]
+        range_gb: Option<String>,
     },
+}
+
+/// Parses `A-B` / `A-` in GB into a byte range.
+fn parse_range_gb(s: &str, len: u64) -> Result<(u64, u64)> {
+    let (a, b) = s
+        .split_once('-')
+        .context("--range-gb expects START-END in GB, e.g. 0-100")?;
+    let gb = |t: &str| -> Result<u64> {
+        let v: f64 = t.trim().parse().with_context(|| format!("not a number: {t}"))?;
+        anyhow::ensure!(v >= 0.0, "negative position");
+        Ok((v * 1e9) as u64)
+    };
+    let a = gb(a)?.min(len);
+    let b = if b.trim().is_empty() { len } else { gb(b)?.min(len) };
+    anyhow::ensure!(a < b, "empty range {s}");
+    // Whole sectors.
+    Ok((a & !511, (b.div_ceil(512) * 512).min(len)))
 }
 
 /// Output and filter options for clips rebuilt from recorder formats.
@@ -241,6 +271,10 @@ struct ClipExtra {
     quiet: bool,
     save_session: Option<PathBuf>,
     no_audio: bool,
+    no_h26x: bool,
+    no_mjpeg: bool,
+    no_mpeg4: bool,
+    range_gb: Option<String>,
 }
 
 fn clip_opts(
@@ -462,7 +496,7 @@ fn recover(
     no_streams: bool,
 ) -> Result<()> {
     let src = Source::open(image)?;
-    guard_output(&image, out)?;
+    guard_output(image, out)?;
     std::fs::create_dir_all(out).with_context(|| format!("cannot create {}", out.display()))?;
     progress::set_stop_file(out.join(".stop"));
     let mut items: Vec<Recovered> = vec![];
@@ -691,6 +725,15 @@ fn recover(
         summary.insert("jdr_by_month".into(), serde_json::to_value(&jdr_stats)?);
     }
 
+    if let Some(r) = &clip_extra.range_gb {
+        let (a, b) = parse_range_gb(r, src.len())?;
+        regions = regions
+            .iter()
+            .filter_map(|&(s, e)| (s.max(a) < e.min(b)).then_some((s.max(a), e.min(b))))
+            .collect();
+        summary.insert("carve_range".into(), serde_json::json!([a, b]));
+    }
+
     // Stage 2: intact containers in the scanned regions.
     let mut damaged_containers = 0usize;
     if !no_containers {
@@ -768,7 +811,7 @@ fn recover(
     };
     let mut discarded = 0;
     let mut chains_without_params = 0;
-    if !no_streams {
+    if !no_streams && !clip_extra.no_h26x {
         let mut carver = stream::Carver::new(&src, &opts, &configs, &hints, out, items.len() + 1);
         progress::stage(
             "frames",
@@ -795,7 +838,7 @@ fn recover(
 
     // Stage 3b: Motion-JPEG runs in what is still not covered.
     let mut mjpeg_runs_small = 0;
-    if !no_streams {
+    if !no_streams && !clip_extra.no_mjpeg && !progress::stopped() {
         let mut cov = covered.clone();
         for it in &items {
             cov.add(it.source_start, it.source_end);
@@ -834,7 +877,7 @@ fn recover(
 
     // Stage 3c: MPEG-4 Part 2 (XviD/DivX) in what is still not covered.
     let mut mpeg4_runs_small = 0;
-    if !no_streams && !progress::stopped() {
+    if !no_streams && !clip_extra.no_mpeg4 && !progress::stopped() {
         let mut cov = covered.clone();
         for it in &items {
             cov.add(it.source_start, it.source_end);
@@ -1054,6 +1097,10 @@ fn main() -> Result<()> {
                 quiet,
                 save_session: None,
                 no_audio,
+                no_h26x: false,
+                no_mjpeg: false,
+                no_mpeg4: false,
+                range_gb: None,
             };
             let o = clip_opts(
                 &x,
@@ -1099,6 +1146,10 @@ fn main() -> Result<()> {
             no_fs,
             no_containers,
             no_streams,
+            no_h26x,
+            no_mjpeg,
+            no_mpeg4,
+            range_gb,
         } => recover(
             &image,
             &out,
@@ -1120,6 +1171,10 @@ fn main() -> Result<()> {
                 quiet,
                 save_session,
                 no_audio,
+                no_h26x,
+                no_mjpeg,
+                no_mpeg4,
+                range_gb,
             },
             max_gap_kib,
             min_frames,

@@ -411,6 +411,16 @@ fn api(req: &Req, job: &Shared) -> Result<Value> {
             )
         }
         ("POST", "/api/copy") => copy(&body(req)?),
+        ("GET", "/api/disks") => Ok(json!({"disks": crate::io::list_disks().iter().map(|d| {
+            let mut v = serde_json::to_value(d).unwrap_or_default();
+            v["label"] = disk_label(d).into();
+            v
+        }).collect::<Vec<_>>()})),
+        ("POST", "/api/mkdir") => {
+            let b = body(req)?;
+            let src = b["source"].as_str().unwrap_or("");
+            mkdir(b["path"].as_str().unwrap_or(""), b["name"].as_str().unwrap_or(""), src)
+        }
         _ => anyhow::bail!("unknown call {} {}", req.method, req.path),
     }
 }
@@ -470,6 +480,34 @@ fn ls(path: &str) -> Result<Value> {
     Ok(
         json!({"path": p.to_string_lossy(), "parent": parent.unwrap_or_default(), "entries": entries}),
     )
+}
+
+fn mkdir(parent: &str, name: &str, source: &str) -> Result<Value> {
+    let name = name.trim();
+    // Never write onto the disk being recovered.
+    let src = Path::new(source);
+    if let (true, Some(n), Some(c)) = (
+        crate::io::is_device_path(src),
+        crate::io::device_number(src),
+        parent.chars().next().filter(|_| parent.get(1..2) == Some(":")),
+    ) {
+        anyhow::ensure!(
+            crate::io::disk_of_letter(c.to_ascii_uppercase()) != Some(n),
+            "이 위치는 복구할 디스크 {n} 안에 있어 폴더를 만들 수 없습니다"
+        );
+    }
+    anyhow::ensure!(
+        !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name.chars().any(|c| "\\/:*?\"<>|".contains(c) || c.is_control()),
+        "폴더 이름에 쓸 수 없는 글자가 있습니다: \\ / : * ? \" < > |"
+    );
+    let parent = Path::new(parent);
+    anyhow::ensure!(parent.is_dir(), "{} 폴더가 없습니다", parent.display());
+    let p = parent.join(name);
+    std::fs::create_dir(&p).with_context(|| format!("cannot create {}", p.display()))?;
+    Ok(json!({"path": p.to_string_lossy()}))
 }
 
 fn disk_label(d: &crate::io::Disk) -> String {
