@@ -278,6 +278,10 @@ impl<'a> Carver<'a> {
         const CHUNK: usize = 4 << 20;
         let mut p = start;
         'outer: loop {
+            crate::progress::at(p);
+            if crate::progress::stopped() {
+                break;
+            }
             if p >= end {
                 // An anchor that was never confirmed may have hidden real data
                 // inside its (false) NAL unit: rescan from just after it.

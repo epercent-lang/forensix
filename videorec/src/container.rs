@@ -22,6 +22,8 @@ pub struct Container {
     pub config: Option<VideoConfig>,
     /// From the MP4 movie header (mvhd), when present.
     pub duration_s: Option<f64>,
+    /// mvhd creation time (recorder clock; time zone not stated by the file).
+    pub created: Option<String>,
 }
 
 /// Checks a candidate MP4 at `start` (limited to `limit`).
@@ -38,6 +40,7 @@ pub fn check_mp4(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
         note: String::new(),
         config: None,
         duration_s: None,
+        created: None,
     };
     if w.open_ended {
         c.note = "box chain runs past the readable area or mdat has size 0 (incomplete recording)"
@@ -55,6 +58,7 @@ pub fn check_mp4(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
     }
     let data = src.read_vec(moov.offset + 8, (moov.size - 8) as usize)?;
     c.duration_s = mvhd_duration(&data);
+    c.created = mvhd_created(&data);
     let tracks = mp4::parse_moov(&data);
     let mut checked = 0usize;
     let mut bad = 0usize;
@@ -126,6 +130,23 @@ fn mvhd_duration(moov: &[u8]) -> Option<f64> {
         p += size;
     }
     None
+}
+
+/// mvhd creation time as `YYYY-MM-DDThh:mm:ss`, if plausible (2000-2099).
+/// MP4 counts seconds from 1904-01-01 (ISO/IEC 14496-12, 8.2.2).
+fn mvhd_created(moov: &[u8]) -> Option<String> {
+    let p = moov.windows(4).position(|w| w == b"mvhd")?;
+    let b = moov.get(p + 4..)?;
+    let secs = if *b.first()? == 1 {
+        u64::from_be_bytes(b.get(4..12)?.try_into().ok()?)
+    } else {
+        u32::from_be_bytes(b.get(4..8)?.try_into().ok()?) as u64
+    };
+    const TO_1970: u64 = 2_082_844_800;
+    let unix = secs.checked_sub(TO_1970)? as i64;
+    let t = crate::jdr::format_time(unix * 1000);
+    let year: i32 = t.get(0..4)?.parse().ok()?;
+    (2000..2100).contains(&year).then(|| t[..19].to_string())
 }
 
 fn is_chunk_id(id: &[u8]) -> bool {
@@ -206,6 +227,7 @@ pub fn check_avi(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
         },
         config: None,
         duration_s: None,
+        created: None,
     }))
 }
 
@@ -228,6 +250,10 @@ pub fn scan(
         memchr::memmem::Finder::new(b"hvcC"),
     ];
     while pos < end {
+        crate::progress::at(pos);
+        if crate::progress::stopped() {
+            break;
+        }
         let len = CHUNK.min((end - pos) as usize);
         let buf = src.read_vec(pos, len + 4096)?;
         let real = len.min(buf.len());

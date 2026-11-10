@@ -15,6 +15,7 @@ mod io;
 mod jdr;
 mod mjpeg;
 mod mp4;
+mod mpeg4v;
 mod ntfs;
 mod preview;
 mod progress;
@@ -298,6 +299,7 @@ fn export(
     let src = Source::open(&image)?;
     ses.check(&src)?;
     std::fs::create_dir_all(out).with_context(|| format!("cannot create {}", out.display()))?;
+    progress::set_stop_file(out.join(".stop"));
     let mut items = vec![];
     let mut stats = jdr::Stats::new();
     let (mut discarded, mut older, mut total, mut broken) = (0, 0, 0, 0);
@@ -327,6 +329,7 @@ fn export(
         "jdr_chunks": total, "jdr_runs_not_matching_session": broken,
         "jdr_clips_from_earlier_pass": older, "jdr_segments_discarded": discarded,
         "jdr_by_month": stats,
+        "stopped_early": progress::stopped(),
         "tool": format!("videorec {}", env!("CARGO_PKG_VERSION")),
     });
     std::fs::write(
@@ -437,6 +440,7 @@ fn recover(
 ) -> Result<()> {
     let src = Source::open(image)?;
     std::fs::create_dir_all(out).with_context(|| format!("cannot create {}", out.display()))?;
+    progress::set_stop_file(out.join(".stop"));
     let mut items: Vec<Recovered> = vec![];
     let mut configs = vec![];
     for r in references {
@@ -666,8 +670,20 @@ fn recover(
     // Stage 2: intact containers in the scanned regions.
     let mut damaged_containers = 0usize;
     if !no_containers {
+        let gaps: Vec<(u64, u64)> = regions
+            .iter()
+            .flat_map(|&(a, b)| covered.clone().gaps(a, b))
+            .collect();
+        progress::stage(
+            "files",
+            gaps.iter().map(|g| g.1 - g.0).sum(),
+            clip_extra.quiet,
+        );
+        let mut done = 0u64;
         for &(a, b) in &regions {
             for (s, e) in covered.clone().gaps(a, b) {
+                progress::region(s, done);
+                done += e - s;
                 let mut found = |c: container::Container| -> Result<u64> {
                     if !c.intact {
                         damaged_containers += 1;
@@ -697,8 +713,13 @@ fn recover(
                             .and_then(|x| x.sps_info())
                             .map(|i| i.height),
                         duration_s: c.duration_s,
+                        created: c.created.clone(),
                         status: "ok".into(),
-                        notes: "container structure verified".into(),
+                        notes: if c.created.is_some() {
+                            "container structure verified; creation time from the MP4 header (recorder clock)".into()
+                        } else {
+                            "container structure verified".into()
+                        },
                         ..Default::default()
                     });
                     Ok(c.end)
@@ -725,8 +746,20 @@ fn recover(
     let mut chains_without_params = 0;
     if !no_streams {
         let mut carver = stream::Carver::new(&src, &opts, &configs, &hints, out, items.len() + 1);
+        progress::stage(
+            "frames",
+            regions
+                .iter()
+                .flat_map(|&(a, b)| covered.gaps(a, b))
+                .map(|g| g.1 - g.0)
+                .sum(),
+            clip_extra.quiet,
+        );
+        let mut done = 0u64;
         for &(a, b) in &regions {
             for (s, e) in covered.gaps(a, b) {
+                progress::region(s, done);
+                done += e - s;
                 carver.scan_region(s, e)?;
             }
         }
@@ -745,8 +778,20 @@ fn recover(
         }
         cov.normalize();
         let mut jpegs = vec![];
+        progress::stage(
+            "jpeg",
+            regions
+                .iter()
+                .flat_map(|&(a, b)| cov.gaps(a, b))
+                .map(|g| g.1 - g.0)
+                .sum(),
+            clip_extra.quiet,
+        );
+        let mut done = 0u64;
         for &(a, b) in &regions {
             for (s, e) in cov.gaps(a, b) {
+                progress::region(s, done);
+                done += e - s;
                 mjpeg::scan(&src, s, e, &mut jpegs)?;
             }
         }
@@ -760,6 +805,33 @@ fn recover(
             fps,
         )?;
         mjpeg_runs_small = small;
+        items.extend(got);
+    }
+
+    // Stage 3c: MPEG-4 Part 2 (XviD/DivX) in what is still not covered.
+    let mut mpeg4_runs_small = 0;
+    if !no_streams && !progress::stopped() {
+        let mut cov = covered.clone();
+        for it in &items {
+            cov.add(it.source_start, it.source_end);
+        }
+        cov.normalize();
+        let gaps: Vec<(u64, u64)> = regions.iter().flat_map(|&(a, b)| cov.gaps(a, b)).collect();
+        progress::stage(
+            "mpeg4",
+            gaps.iter().map(|g| g.1 - g.0).sum(),
+            clip_extra.quiet,
+        );
+        let (got, small) = mpeg4v::carve(
+            &src,
+            &gaps,
+            out,
+            items.len() + 1,
+            max_gap_kib * 1024,
+            min_frames,
+            fps,
+        )?;
+        mpeg4_runs_small = small;
         items.extend(got);
     }
 
@@ -808,9 +880,15 @@ fn recover(
     summary.insert("small_fragments_discarded".into(), discarded.into());
     summary.insert("jpeg_runs_below_min_frames".into(), mjpeg_runs_small.into());
     summary.insert(
+        "mpeg4_runs_below_min_frames".into(),
+        mpeg4_runs_small.into(),
+    );
+    summary.insert(
         "video_chains_without_parameter_sets".into(),
         chains_without_params.into(),
     );
+    progress::end_stage();
+    summary.insert("stopped_early".into(), progress::stopped().into());
     summary.insert(
         "tool".into(),
         format!("videorec {}", env!("CARGO_PKG_VERSION")).into(),

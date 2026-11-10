@@ -42,6 +42,9 @@ def make_videos(vdir):
     # Motion-JPEG recording (many CCTV DVRs) and one still photo.
     run(*common, "-f", "lavfi", "-i", "testsrc2=size=640x480:rate=10:duration=6,hue=h=200",
         "-c:v", "mjpeg", "-q:v", "5", "-pix_fmt", "yuvj420p", f"{vdir}/M.avi")
+    # MPEG-4 Part 2 (XviD-style) recording, as in many older DVRs.
+    run(*common, "-f", "lavfi", "-i", "testsrc2=size=704x480:rate=25:duration=8,hue=h=120",
+        "-c:v", "mpeg4", "-vtag", "XVID", "-g", "25", "-q:v", "4", f"{vdir}/X.avi")
     run(*common, "-f", "lavfi", "-i", "testsrc2=size=1024x768:rate=1:duration=1",
         "-frames:v", "1", "-pix_fmt", "yuvj420p", f"{vdir}/photo.jpg")
     # E.mp4: recording cut by power loss — everything from moov on is missing.
@@ -503,6 +506,14 @@ def main():
         f.write(open(v("M.avi"), "rb").read()[8192:])
         f.write(os.urandom(MB))
     truth["mjpeg_raw"] = {"expect": ["M.avi"], "live": [], "min_share": {"M.avi": 0.9}}
+
+    # 9b. MPEG-4 Part 2 frames (AVI header lost) between random data.
+    img = os.path.join(work, "mpeg4_raw.img")
+    with open(img, "wb") as f:
+        f.write(os.urandom(2 * MB))
+        f.write(open(v("X.avi"), "rb").read()[8192:])
+        f.write(os.urandom(MB))
+    truth["mpeg4_raw"] = {"expect": ["X.avi"], "live": [], "min_share": {"X.avi": 0.85}}
 
     # 10. NTFS volume in a GPT disk (CCTV export PCs, NVR USB backups),
     #     files deleted. Needs mkntfs and ntfs-3g (FUSE) to build.

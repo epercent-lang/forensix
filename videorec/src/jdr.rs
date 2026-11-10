@@ -178,6 +178,9 @@ pub fn scan(
     let mut pos = start;
     let mut buf = vec![0u8; CHUNK + HEADER + 4];
     while pos < end {
+        if crate::progress::stopped() {
+            break;
+        }
         let want = (CHUNK + HEADER + 4).min((end - pos) as usize);
         let n = src.read_at(pos, &mut buf[..want])?;
         if n < HEADER + 4 {
@@ -224,6 +227,9 @@ pub fn walk(
     let mut broken = 0;
     let mut b = [0u8; HEADER + 4];
     for &(start, end) in runs {
+        if crate::progress::stopped() {
+            break;
+        }
         let mut pos = start;
         while pos + (HEADER as u64) < end {
             if src.read_at(pos, &mut b)? < b.len() {
@@ -480,6 +486,9 @@ pub fn write_clips(
         }
         let mut i = 0;
         while i < v.len() {
+            if !dry_run && crate::progress::stopped() {
+                break;
+            }
             let mut j = i + 1;
             while j < v.len() && v[j].fmt == v[i].fmt && v[j].t_ms - v[j - 1].t_ms <= max_gap_ms {
                 j += 1;

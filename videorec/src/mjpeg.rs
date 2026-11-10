@@ -98,6 +98,10 @@ pub fn scan(src: &Source, start: u64, end: u64, found: &mut Vec<Jpeg>) -> Result
     let mut pos = start;
     let mut buf = vec![0u8; BLOCK + MAX_JPEG];
     while pos < end {
+        crate::progress::at(pos);
+        if crate::progress::stopped() {
+            break;
+        }
         let want = (BLOCK + MAX_JPEG).min((end - pos) as usize);
         let n = src.read_at(pos, &mut buf[..want])?;
         if n < 4 {

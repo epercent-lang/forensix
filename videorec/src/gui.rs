@@ -378,11 +378,24 @@ fn api(req: &Req, job: &Shared) -> Result<Value> {
         ("POST", "/api/run") => start(&body(req)?, job),
         ("GET", "/api/status") => Ok(status(job)),
         ("POST", "/api/stop") => {
+            // First press: ask the scan to stop and still write its report
+            // (it watches for OUT/.stop). Second press: end it at once.
             let mut j = job.lock().unwrap();
-            if let Some(c) = j.child.as_mut() {
-                c.kill().ok();
+            let out = j
+                .args
+                .iter()
+                .position(|a| a == "-o")
+                .and_then(|k| j.args.get(k + 1))
+                .map(|o| Path::new(o).join(".stop"));
+            let hard = out.as_ref().is_none_or(|p| p.exists());
+            if hard {
+                if let Some(c) = j.child.as_mut() {
+                    c.kill().ok();
+                }
+            } else if let Some(p) = out {
+                std::fs::write(p, b"stop")?;
             }
-            Ok(json!({"ok": true}))
+            Ok(json!({"ok": true, "hard": hard}))
         }
         ("GET", "/api/report") => {
             let p = Path::new(&req.q("out")).join("report.json");
