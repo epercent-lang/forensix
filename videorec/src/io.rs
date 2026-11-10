@@ -415,6 +415,8 @@ pub enum FsKind {
     Fat32,
     ExFat,
     Ntfs,
+    /// ext2, ext3 or ext4.
+    Ext,
     Unknown,
 }
 
@@ -441,12 +443,25 @@ pub fn detect_fs(boot: &[u8]) -> FsKind {
     FsKind::Unknown
 }
 
+/// File system at `offset`: boot-sector types first, then the ext super
+/// block (at byte 1024 of the volume).
+fn detect_at(src: &Source, offset: u64, boot: &[u8]) -> FsKind {
+    let k = detect_fs(boot);
+    if k != FsKind::Unknown {
+        return k;
+    }
+    match src.read_vec(offset + 1024, 1024) {
+        Ok(sb) if crate::ext4::is_ext(&sb) => FsKind::Ext,
+        _ => FsKind::Unknown,
+    }
+}
+
 /// Finds volumes: either the whole image is a volume (no partition table, common
 /// for some cards after reformatting) or an MBR lists primary partitions.
 pub fn find_volumes(src: &Source) -> Result<Vec<Volume>> {
     let mut s0 = [0u8; 512];
     src.read_exact_at(0, &mut s0)?;
-    let kind = detect_fs(&s0);
+    let kind = detect_at(src, 0, &s0);
     if kind != FsKind::Unknown {
         return Ok(vec![Volume {
             offset: 0,
@@ -482,7 +497,7 @@ pub fn find_volumes(src: &Source) -> Result<Vec<Volume>> {
                 vols.push(Volume {
                     offset,
                     length: ((last - first + 1) * 512).min(src.len() - offset),
-                    kind: detect_fs(&b),
+                    kind: detect_at(src, offset, &b),
                 });
             }
             return Ok(vols);
@@ -506,7 +521,7 @@ pub fn find_volumes(src: &Source) -> Result<Vec<Volume>> {
             vols.push(Volume {
                 offset,
                 length: (count * 512).min(src.len() - offset),
-                kind: detect_fs(&b),
+                kind: detect_at(src, offset, &b),
             });
         }
     }

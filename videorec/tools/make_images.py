@@ -545,6 +545,32 @@ def main():
         os.remove(vol)
         truth["ntfs_gpt"] = {"expect": ["A.mp4", "C.mp4", "E.mp4"], "live": ["B.mp4"]}
 
+    # 11. ext4 (Linux-based NVRs and dashcams), files deleted by the kernel
+    #     driver, which clears the extent list in the inode; the journal
+    #     still holds older inode copies. Needs root and a loop mount.
+    if shutil.which("mkfs.ext4") and os.geteuid() == 0:
+        img = os.path.join(work, "ext4_deleted.img")
+        mnt = os.path.join(work, "ext4_mnt")
+        if os.path.exists(img):
+            os.remove(img)
+        run("truncate", "-s", "128M", img)
+        run("mkfs.ext4", "-q", "-F", img)
+        os.makedirs(mnt, exist_ok=True)
+        mounted = subprocess.run(["mount", "-o", "loop", img, mnt]).returncode == 0
+        if mounted:
+            try:
+                os.makedirs(os.path.join(mnt, "record", "ch01"), exist_ok=True)
+                for n in ("A.mp4", "B.mp4", "C.mp4", "E.mp4"):
+                    shutil.copy(v(n), os.path.join(mnt, "record", "ch01", n))
+                run("sync")
+                for n in ("A.mp4", "C.mp4", "E.mp4"):
+                    os.remove(os.path.join(mnt, "record", "ch01", n))
+            finally:
+                run("umount", mnt)
+            truth["ext4_deleted"] = {"expect": ["A.mp4", "C.mp4", "E.mp4"], "live": ["B.mp4"]}
+        else:
+            os.remove(img)
+
     json.dump(truth, open(os.path.join(work, "truth.json"), "w"), indent=2)
     print("images written to", work)
 

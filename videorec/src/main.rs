@@ -10,6 +10,7 @@ mod avi;
 mod codec;
 mod container;
 mod dhav;
+mod ext4;
 mod fs;
 mod gui;
 mod io;
