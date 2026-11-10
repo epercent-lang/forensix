@@ -391,8 +391,10 @@ $('btnInfo').onclick = async () => {
     let d = `살아 있는 파일 ${live.toLocaleString()}개, 삭제 기록 ${del.toLocaleString()}개`;
     if (j.jdr_files) d += `\n.jdr 파일 ${j.jdr_files}개: 파일 안에 남은 옛 녹화도 찾습니다`;
     for (const r of j.recorder) d += `\n${r.system} 디스크로 보입니다 (${r.signature}). 전용 파일시스템은 아직 읽지 못하고 프레임 카빙으로 찾습니다. 출처: ${r.source}`;
+    if (j.device) d = `물리 디스크를 읽기 전용으로 엽니다. 디스크에는 아무것도 쓰지 않습니다.\n` + d;
     $('iDetail').textContent = d; $('infoCard').hidden = false;
-    if (!$('outDir').value) $('outDir').value = join(p.replace(/[\\/][^\\/]*$/, ''), 'videorec_out' + sep(p) + 'gui_' + new Date().toISOString().slice(0,16).replace(/[-:T]/g, ''));
+    const stamp = 'gui_' + new Date().toISOString().slice(0,16).replace(/[-:T]/g, '');
+    if (!$('outDir').value) $('outDir').value = j.out_base ? join(j.out_base, stamp) : join(p.replace(/[\\/][^\\/]*$/, ''), 'videorec_out' + sep(p) + stamp);
     checkSame();
   } catch (e) { $('infoErr').textContent = e.message; $('infoErr').hidden = false; }
   $('btnInfo').disabled = false; $('btnInfo').textContent = '확인';
@@ -400,13 +402,20 @@ $('btnInfo').onclick = async () => {
 $('btnSes').onclick = () => { $('expSes').value = $('sesPath').value; document.querySelector('input[name=how][value=session]').checked = true; show(4); };
 
 // ---- 2 scan
-function checkSame() { const a = drive($('imgPath').value), b = drive($('outDir').value); $('sameDisk').hidden = !(a && a == b); }
+function checkSame() {
+  const a = drive($('imgPath').value), b = drive($('outDir').value);
+  const onDisk = st.info?.device && b && (st.info.disk_letters || []).includes(b);
+  $('sameDisk').textContent = onDisk ? '저장 위치가 복구할 물리 디스크 안에 있습니다. 삭제된 영상을 덮어쓸 수 있어 이 위치로는 스캔할 수 없습니다. 다른 디스크를 고르세요.'
+    : '원본 이미지와 같은 디스크입니다. 이미지 파일이라 원본 장치에는 영향이 없지만, 공간이 충분한지 확인하세요.';
+  $('sameDisk').hidden = !(onDisk || (a && a == b));
+}
 $('outDir').oninput = checkSame;
 const tval = id => $(id).value ? $(id).value.replace('T', ' ') : null;
 $('btnScan').onclick = async () => {
   const img = $('imgPath').value.trim(), out = $('outDir').value.trim();
   $('scanErr').hidden = true;
   if (!img || !out) { $('scanErr').textContent = '원본과 저장 위치를 먼저 정하세요.'; $('scanErr').hidden = false; return; }
+  if (st.info?.device && (st.info.disk_letters || []).includes(drive(out))) { $('scanErr').textContent = '저장 위치가 복구할 디스크 안에 있습니다. 다른 디스크를 고르세요.'; $('scanErr').hidden = false; return; }
   const a = ['recover', img, '-o', out, '--scope', document.querySelector('input[name=scope]:checked').value,
     '--format', $('fmt').value, '--group', $('grp').value];
   if (!$('tFs').checked) a.push('--no-fs');

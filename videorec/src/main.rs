@@ -298,6 +298,7 @@ fn export(
         .unwrap_or_else(|| PathBuf::from(&ses.source));
     let src = Source::open(&image)?;
     ses.check(&src)?;
+    guard_output(&image, out)?;
     std::fs::create_dir_all(out).with_context(|| format!("cannot create {}", out.display()))?;
     progress::set_stop_file(out.join(".stop"));
     let mut items = vec![];
@@ -330,6 +331,7 @@ fn export(
         "jdr_clips_from_earlier_pass": older, "jdr_segments_discarded": discarded,
         "jdr_by_month": stats,
         "stopped_early": progress::stopped(),
+        "unreadable_sectors": src.bad_sectors(),
         "tool": format!("videorec {}", env!("CARGO_PKG_VERSION")),
     });
     std::fs::write(
@@ -343,6 +345,27 @@ fn export(
         out.join("report.json").display()
     );
     Ok(())
+}
+
+/// Refuses to write recovered files onto the physical disk being recovered:
+/// new files would overwrite the deleted data we are trying to read.
+fn guard_output(image: &Path, out: &Path) -> Result<()> {
+    let Some(n) = io::device_number(image).filter(|_| io::is_device_path(image)) else {
+        return Ok(());
+    };
+    let s = out.to_string_lossy();
+    let letter = s.chars().next().filter(|c| c.is_ascii_alphabetic() && s[1..].starts_with(':'));
+    match letter {
+        Some(c) if io::disk_of_letter(c.to_ascii_uppercase()) == Some(n) => anyhow::bail!(
+            "저장 위치 {}가 복구 대상 디스크 {n}에 있습니다. 덮어쓰기를 막기 위해 다른 디스크를 고르세요",
+            out.display()
+        ),
+        None if !out.is_absolute() && cfg!(windows) => {
+            let cwd = std::env::current_dir()?;
+            guard_output(image, &cwd.join(out))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn volumes(src: &Source) -> Result<Vec<Volume>> {
@@ -439,6 +462,7 @@ fn recover(
     no_streams: bool,
 ) -> Result<()> {
     let src = Source::open(image)?;
+    guard_output(&image, out)?;
     std::fs::create_dir_all(out).with_context(|| format!("cannot create {}", out.display()))?;
     progress::set_stop_file(out.join(".stop"));
     let mut items: Vec<Recovered> = vec![];
@@ -888,6 +912,7 @@ fn recover(
         chains_without_params.into(),
     );
     progress::end_stage();
+    summary.insert("unreadable_sectors".into(), src.bad_sectors().into());
     summary.insert("stopped_early".into(), progress::stopped().into());
     summary.insert(
         "tool".into(),

@@ -419,11 +419,22 @@ fn ls(path: &str) -> Result<Value> {
     if path.is_empty() {
         #[cfg(windows)]
         {
-            let drives: Vec<Value> = (b'A'..=b'Z')
+            let mut drives: Vec<Value> = (b'A'..=b'Z')
                 .map(|c| format!("{}:\\", c as char))
                 .filter(|d| Path::new(d).exists())
                 .map(|d| json!({"name": d, "path": d, "dir": true}))
                 .collect();
+            // Physical disks, numbered as in Disk Management ("디스크 N").
+            for d in crate::io::list_disks() {
+                drives.push(json!({
+                    "name": disk_label(&d),
+                    "path": d.path,
+                    "dir": false,
+                    "size": d.size,
+                    "disk": true,
+                    "readable": d.readable,
+                }));
+            }
             return Ok(json!({"path": "", "parent": null, "entries": drives}));
         }
         #[cfg(not(windows))]
@@ -461,6 +472,24 @@ fn ls(path: &str) -> Result<Value> {
     )
 }
 
+fn disk_label(d: &crate::io::Disk) -> String {
+    let mut s = format!("💽 디스크 {}", d.number);
+    if !d.model.is_empty() {
+        s += &format!(" · {}", d.model);
+    }
+    if !d.letters.is_empty() {
+        let l: Vec<String> = d.letters.iter().map(|c| format!("{c}:")).collect();
+        s += &format!(" ({})", l.join(" "));
+    }
+    if d.removable {
+        s += " · 이동식";
+    }
+    if !d.readable {
+        s += " · 관리자 권한 필요";
+    }
+    s
+}
+
 fn info(path: &Path) -> Result<Value> {
     let src = Source::open(path).with_context(|| format!("cannot open {}", path.display()))?;
     let mut vols = vec![];
@@ -488,9 +517,25 @@ fn info(path: &Path) -> Result<Value> {
             "jdr_files": j,
         }));
     }
+    let device = crate::io::is_device_path(path);
+    let disk = crate::io::device_number(path)
+        .filter(|_| device)
+        .and_then(|n| crate::io::list_disks().into_iter().find(|d| d.number == n));
+    // For a disk there is no folder next to the image, so suggest
+    // <folder of videorec>\..\videorec_out.
+    let out_base = device
+        .then(|| std::env::current_exe().ok())
+        .flatten()
+        .and_then(|e| e.parent().and_then(|p| p.parent()).map(|p| p.join("videorec_out")));
     Ok(json!({
         "path": path.to_string_lossy(),
-        "name": path.file_name().map(|n| n.to_string_lossy().into_owned()),
+        "name": match &disk {
+            Some(d) => Some(disk_label(d)),
+            None => path.file_name().map(|n| n.to_string_lossy().into_owned()),
+        },
+        "device": device,
+        "disk_letters": disk.as_ref().map(|d| d.letters.iter().map(|c| c.to_string()).collect::<Vec<_>>()),
+        "out_base": out_base.map(|p| p.to_string_lossy().into_owned()),
         "size": src.len(),
         "volumes": vols,
         "jdr_files": jdr,

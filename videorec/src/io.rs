@@ -2,7 +2,9 @@
 //!
 //! The source is never opened for writing. All reads go through [`Source`].
 
-use anyhow::{Context, Result, bail};
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use std::fs::File;
 use std::path::Path;
 
@@ -15,12 +17,50 @@ use std::os::windows::fs::FileExt;
 pub struct Source {
     file: File,
     len: u64,
+    /// Non-zero for raw Windows disks (`\\.\PhysicalDriveN`): reads there must
+    /// start and end on sector boundaries, so they go through an aligned buffer.
+    align: u64,
+    /// Sectors that could not be read and were returned as zeros.
+    bad: std::sync::atomic::AtomicU64,
+    /// Read-ahead window for small device reads (raw disks are not cached by
+    /// the OS, and parsers read headers a few bytes at a time).
+    cache: std::sync::Mutex<(u64, Vec<u8>)>,
+}
+
+const WINDOW: u64 = 1 << 20;
+
+/// True for Windows device paths such as `\\.\PhysicalDrive3`.
+pub fn is_device_path(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    s.starts_with(r"\\.\") || s.starts_with("//./")
 }
 
 impl Source {
     pub fn open(path: &Path) -> Result<Self> {
-        // `File::open` opens read-only.
-        let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+        // `File::open` opens read-only (GENERIC_READ on Windows, with the
+        // default share mode so a mounted volume on the disk stays usable).
+        let file = File::open(path).map_err(|e| {
+            let mut m = format!("cannot open {}: {e}", path.display());
+            if is_device_path(path) && e.kind() == std::io::ErrorKind::PermissionDenied {
+                m.push_str(" (물리 디스크는 관리자 권한으로 실행해야 읽을 수 있습니다)");
+            }
+            anyhow::anyhow!(m)
+        })?;
+        if is_device_path(path) {
+            #[cfg(windows)]
+            {
+                let g = win::geometry(&file)
+                    .with_context(|| format!("cannot read the size of {}", path.display()))?;
+                let align = g.sector.max(512).max(4096);
+                return Ok(Self {
+                    file,
+                    len: g.size,
+                    align,
+                    bad: Default::default(),
+                    cache: Default::default(),
+                });
+            }
+        }
         let mut len = file.metadata()?.len();
         if len == 0 {
             // Block devices report 0 length in metadata; seek to the end instead.
@@ -28,11 +68,29 @@ impl Source {
             let mut f = &file;
             len = f.seek(SeekFrom::End(0))?;
         }
-        Ok(Self { file, len })
+        Ok(Self {
+            file,
+            len,
+            align: 0,
+            bad: Default::default(),
+            cache: Default::default(),
+        })
     }
 
     pub fn len(&self) -> u64 {
         self.len
+    }
+
+    /// Number of 512-byte sectors that failed to read and were zero-filled.
+    pub fn bad_sectors(&self) -> u64 {
+        self.bad.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn raw_read(&self, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        #[cfg(unix)]
+        return self.file.read_at(buf, offset);
+        #[cfg(windows)]
+        return self.file.seek_read(buf, offset);
     }
 
     /// Reads up to `buf.len()` bytes at `offset`. Returns the number of bytes read
@@ -42,22 +100,94 @@ impl Source {
             return Ok(0);
         }
         let want = buf.len().min((self.len - offset) as usize);
+        if self.align != 0 {
+            if (want as u64) < WINDOW / 4 {
+                return self.read_cached(offset, &mut buf[..want]);
+            }
+            return self.read_aligned(offset, &mut buf[..want]);
+        }
         let mut done = 0;
         while done < want {
-            #[cfg(unix)]
-            let n = self
-                .file
-                .read_at(&mut buf[done..want], offset + done as u64)?;
-            #[cfg(windows)]
-            let n = self
-                .file
-                .seek_read(&mut buf[done..want], offset + done as u64)?;
+            let n = self.raw_read(&mut buf[done..want], offset + done as u64)?;
             if n == 0 {
                 break;
             }
             done += n;
         }
         Ok(done)
+    }
+
+    fn read_cached(&self, offset: u64, out: &mut [u8]) -> Result<usize> {
+        let mut c = self.cache.lock().unwrap();
+        let end = offset + out.len() as u64;
+        if !(offset >= c.0 && end <= c.0 + c.1.len() as u64) {
+            let base = offset - offset % WINDOW;
+            let len = (WINDOW * 2).min(self.len - base) as usize;
+            let mut v = vec![0u8; len];
+            let n = self.read_aligned(base, &mut v)?;
+            v.truncate(n);
+            *c = (base, v);
+        }
+        let from = (offset - c.0) as usize;
+        let n = out.len().min(c.1.len().saturating_sub(from));
+        out[..n].copy_from_slice(&c.1[from..from + n]);
+        Ok(n)
+    }
+
+    /// Device read: sector-aligned offset, length and buffer. Unreadable
+    /// sectors are zero-filled and counted instead of failing the whole scan.
+    fn read_aligned(&self, offset: u64, out: &mut [u8]) -> Result<usize> {
+        const CHUNK: u64 = 4 << 20;
+        let a = self.align;
+        let mut done = 0usize;
+        let cap = ((out.len() as u64 + a).div_ceil(a) * a).min(CHUNK);
+        let mut store = vec![0u8; (cap + a) as usize];
+        let shift = store.as_ptr().align_offset(a as usize);
+        let bounce = &mut store[shift..shift + cap as usize];
+        while done < out.len() {
+            let pos = offset + done as u64;
+            let base = pos - pos % a;
+            let skip = (pos - base) as usize;
+            let need = (skip + out.len() - done) as u64;
+            // Round up to the alignment but never past the end of the disk
+            // (disk sizes are whole 512-byte sectors).
+            let mut len = need.div_ceil(a) * a;
+            len = len.min(cap).min(self.len - base);
+            let len = len as usize;
+            let got = self.read_device(base, &mut bounce[..len]);
+            if got <= skip {
+                break;
+            }
+            let n = (got - skip).min(out.len() - done);
+            out[done..done + n].copy_from_slice(&bounce[skip..skip + n]);
+            done += n;
+        }
+        Ok(done)
+    }
+
+    fn read_device(&self, base: u64, buf: &mut [u8]) -> usize {
+        let mut done = 0;
+        while done < buf.len() {
+            match self.raw_read(&mut buf[done..], base + done as u64) {
+                Ok(0) => break,
+                Ok(n) => done += n,
+                Err(_) => {
+                    // Retry sector by sector; zero-fill the ones that fail.
+                    let end = buf.len();
+                    let mut p = done;
+                    while p < end {
+                        let s = 512.min(end - p);
+                        if self.raw_read(&mut buf[p..p + s], base + p as u64).is_err() {
+                            buf[p..p + s].fill(0);
+                            self.bad.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        p += s;
+                    }
+                    return end;
+                }
+            }
+        }
+        done
     }
 
     pub fn read_vec(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
@@ -73,6 +203,183 @@ impl Source {
             bail!("short read at offset {offset:#x}");
         }
         Ok(())
+    }
+}
+
+/// A physical disk as Windows numbers it (Disk Management "디스크 N").
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Disk {
+    pub number: u32,
+    pub path: String,
+    pub size: u64,
+    pub model: String,
+    pub removable: bool,
+    /// Drive letters of volumes on this disk.
+    pub letters: Vec<char>,
+    /// Whether this process may read it (needs administrator rights).
+    pub readable: bool,
+}
+
+#[cfg(windows)]
+pub fn list_disks() -> Vec<Disk> {
+    win::list_disks()
+}
+
+#[cfg(not(windows))]
+pub fn list_disks() -> Vec<Disk> {
+    vec![]
+}
+
+/// Disk number of a drive letter's volume, e.g. `'E'` → 3.
+#[cfg(windows)]
+pub fn disk_of_letter(letter: char) -> Option<u32> {
+    win::disk_of_letter(letter)
+}
+
+#[cfg(not(windows))]
+pub fn disk_of_letter(_letter: char) -> Option<u32> {
+    None
+}
+
+/// Disk number from `\\.\PhysicalDriveN`.
+pub fn device_number(path: &Path) -> Option<u32> {
+    let s = path.to_string_lossy().to_ascii_lowercase();
+    let i = s.find("physicaldrive")?;
+    s[i + 13..].parse().ok()
+}
+
+#[cfg(windows)]
+mod win {
+    //! Win32 disk IOCTLs (documented in the Windows SDK headers winioctl.h).
+    use super::Disk;
+    use std::ffi::c_void;
+    use std::fs::{File, OpenOptions};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+
+    // CTL_CODE(DeviceType, Function, Method, Access) values from winioctl.h.
+    const IOCTL_DISK_GET_DRIVE_GEOMETRY_EX: u32 = 0x0007_00A0;
+    const IOCTL_STORAGE_QUERY_PROPERTY: u32 = 0x002D_1400;
+    const IOCTL_STORAGE_GET_DEVICE_NUMBER: u32 = 0x002D_1080;
+    const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn DeviceIoControl(
+            h: *mut c_void,
+            code: u32,
+            inb: *const c_void,
+            insz: u32,
+            outb: *mut c_void,
+            outsz: u32,
+            ret: *mut u32,
+            ov: *mut c_void,
+        ) -> i32;
+    }
+
+    fn ioctl(f: &File, code: u32, input: &[u8], out: &mut [u8]) -> Option<usize> {
+        let mut ret = 0u32;
+        // SAFETY: buffers are valid for the given sizes; synchronous call.
+        let ok = unsafe {
+            DeviceIoControl(
+                f.as_raw_handle(),
+                code,
+                input.as_ptr() as *const c_void,
+                input.len() as u32,
+                out.as_mut_ptr() as *mut c_void,
+                out.len() as u32,
+                &mut ret,
+                std::ptr::null_mut(),
+            )
+        };
+        (ok != 0).then_some(ret as usize)
+    }
+
+    /// Opens a device with no data access: enough for the IOCTLs below and
+    /// allowed without administrator rights.
+    fn open_query(path: &str) -> Option<File> {
+        OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ_WRITE)
+            .open(path)
+            .ok()
+    }
+
+    pub struct Geometry {
+        pub size: u64,
+        pub sector: u64,
+    }
+
+    pub fn geometry(f: &File) -> std::io::Result<Geometry> {
+        // DISK_GEOMETRY_EX: DISK_GEOMETRY (24 bytes, BytesPerSector at 20),
+        // then DiskSize (LARGE_INTEGER) at 24.
+        let mut out = [0u8; 256];
+        let n = ioctl(f, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, &[], &mut out)
+            .ok_or_else(std::io::Error::last_os_error)?;
+        if n < 32 {
+            return Err(std::io::Error::other("short DISK_GEOMETRY_EX"));
+        }
+        Ok(Geometry {
+            sector: u32::from_le_bytes(out[20..24].try_into().unwrap()) as u64,
+            size: u64::from_le_bytes(out[24..32].try_into().unwrap()),
+        })
+    }
+
+    fn device_number(f: &File) -> Option<u32> {
+        // STORAGE_DEVICE_NUMBER { DeviceType, DeviceNumber, PartitionNumber }.
+        let mut out = [0u8; 12];
+        ioctl(f, IOCTL_STORAGE_GET_DEVICE_NUMBER, &[], &mut out)?;
+        Some(u32::from_le_bytes(out[4..8].try_into().unwrap()))
+    }
+
+    pub fn disk_of_letter(letter: char) -> Option<u32> {
+        device_number(&open_query(&format!(r"\\.\{letter}:"))?)
+    }
+
+    fn describe(f: &File) -> (String, bool) {
+        // STORAGE_PROPERTY_QUERY { StorageDeviceProperty = 0, PropertyStandardQuery = 0 }.
+        let q = [0u8; 12];
+        let mut out = vec![0u8; 1024];
+        let Some(n) = ioctl(f, IOCTL_STORAGE_QUERY_PROPERTY, &q, &mut out) else {
+            return (String::new(), false);
+        };
+        let out = &out[..n];
+        // STORAGE_DEVICE_DESCRIPTOR: RemovableMedia at 10, VendorIdOffset at 12,
+        // ProductIdOffset at 16 (offsets to NUL-terminated ASCII strings).
+        let s = |at: usize| -> String {
+            let Some(o) = out.get(at..at + 4) else { return String::new() };
+            let o = u32::from_le_bytes(o.try_into().unwrap()) as usize;
+            if o == 0 || o >= out.len() {
+                return String::new();
+            }
+            let end = out[o..].iter().position(|&b| b == 0).map_or(out.len(), |e| o + e);
+            String::from_utf8_lossy(&out[o..end]).trim().to_string()
+        };
+        let model = format!("{} {}", s(12), s(16)).trim().to_string();
+        (model, out.get(10).is_some_and(|&b| b != 0))
+    }
+
+    pub fn list_disks() -> Vec<Disk> {
+        let letters: Vec<(char, u32)> = ('A'..='Z')
+            .filter_map(|c| disk_of_letter(c).map(|n| (c, n)))
+            .collect();
+        let mut disks = vec![];
+        for n in 0..64u32 {
+            let path = format!(r"\\.\PhysicalDrive{n}");
+            let Some(f) = open_query(&path) else { continue };
+            let Ok(g) = geometry(&f) else { continue };
+            let (model, removable) = describe(&f);
+            disks.push(Disk {
+                number: n,
+                readable: File::open(&path).is_ok(),
+                path,
+                size: g.size,
+                model,
+                removable,
+                letters: letters.iter().filter(|l| l.1 == n).map(|l| l.0).collect(),
+            });
+        }
+        disks
     }
 }
 
@@ -194,4 +501,44 @@ pub fn be32(b: &[u8], o: usize) -> u32 {
 }
 pub fn be64(b: &[u8], o: usize) -> u64 {
     u64::from_be_bytes(b[o..o + 8].try_into().unwrap())
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+
+    #[test]
+    fn aligned_reads_match_plain_reads() {
+        let dir = std::env::temp_dir().join(format!("vr_align_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("img.bin");
+        // 3 MiB + 1536: ends on a 512-byte sector but not on 4096.
+        let data: Vec<u8> = (0..(3 << 20) + 1536u32)
+            .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+            .collect();
+        std::fs::write(&p, &data).unwrap();
+        let plain = Source::open(&p).unwrap();
+        let mut dev = Source::open(&p).unwrap();
+        dev.align = 4096;
+        let mut seed = 7u64;
+        for i in 0..400 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let off = (seed >> 20) % (data.len() as u64 + 100);
+            let len = if i % 5 == 0 { (seed >> 7) as usize % (6 << 20) } else { (seed >> 9) as usize % 9000 };
+            let mut a = vec![0u8; len];
+            let mut b = vec![1u8; len];
+            let na = plain.read_at(off, &mut a).unwrap();
+            let nb = dev.read_at(off, &mut b).unwrap();
+            assert_eq!(na, nb, "len at {off}+{len}");
+            assert_eq!(a[..na], b[..nb], "data at {off}+{len}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn device_numbers() {
+        assert_eq!(device_number(Path::new(r"\\.\PhysicalDrive3")), Some(3));
+        assert!(is_device_path(Path::new(r"\\.\PhysicalDrive12")));
+        assert!(!is_device_path(Path::new(r"E:\Claude\6456.raw")));
+    }
 }
