@@ -33,7 +33,7 @@
 | 영상 코덱 | MJPEG2000, MPEG-4 Part 2, MPEG-1/2 | ❌ | |
 | 오디오 | PCM, ADPCM, G.711 | ❌ | .jdr의 AD 청크 형식부터 확인 필요 |
 | 파일시스템 | FAT/FAT32, exFAT | ✅ | 삭제 파일 복구 포함 |
-| 파일시스템 | NTFS | ❌ | |
+| 파일시스템 | NTFS | ✅ | MFT의 삭제 레코드에서 파일 복구, 클러스터 비트맵으로 빈 공간 판단. GPT 파티션도 인식 |
 | 파일시스템 | HFS+, APFS, ext2/3/4, XFS, JFS, ReiserFS, Btrfs | ❌ | 파일시스템이 없어도 프레임 카빙은 동작 |
 | CCTV 파일시스템 | WFS, DHFS(Dahua), HIK(Hikvision), Mirage, Pinetron, BKFL | ❌ | 공개 논문이 있는 HIK, DHFS, WFS부터 검토 예정 |
 | 녹화기 스트림 형식 | dhav, dch264, hav, idis, ndav 등 30여 종 | ❌ | 파일시스템 없이도 내부 H.264/H.265는 일반 카빙으로 일부 복구 가능 |
@@ -46,7 +46,7 @@
 1. 진행률을 모든 단계로 확장, 중간 중단 시 찾은 것 저장
 2. .jdr 오디오 (AD 청크 형식 확인 후)
 3. CCTV 파일시스템: 공개 연구 자료가 있는 것부터 (HIK, DHFS, WFS). 실제 장치 이미지가 있어야 검증 가능
-4. NTFS, ext4
+4. ext4
 5. MPEG-4 Part 2 카빙
 
 ## 출처

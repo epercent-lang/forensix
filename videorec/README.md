@@ -73,7 +73,7 @@ Windows용 빌드: `cargo build --release --target x86_64-pc-windows-gnu` (mingw
 ## 테스트
 
 ```bash
-python3 tools/make_images.py /tmp/work   # 합성 SD카드 이미지 9종 생성 (ffmpeg, dosfstools, mtools, exfatprogs 필요)
+python3 tools/make_images.py /tmp/work   # 합성 이미지 10종 생성 (ffmpeg, dosfstools, mtools, exfatprogs 필요)
 python3 tools/evaluate.py /tmp/work      # 복구 후 원본과 프레임 단위로 비교
 cargo test
 ```
@@ -91,6 +91,7 @@ cargo test
 | raw_noFS | 파일시스템 없음, 파일 헤더 손실 (H.264 + H.265) | 210/240, 150/180 프레임 |
 | avi_overwritten | AVI 헤더와 앞부분 덮어써짐 | 119/150 프레임 |
 | back_to_back | 파일 3개가 빈틈없이 이어서 기록됨 | 180/180, 180/180, 240/240 프레임 |
+| ntfs_gpt | GPT 디스크의 NTFS에서 MP4 3개 삭제 (H.265, MOOV 없는 파일 포함) | 2개 원본과 동일, MOOV 없는 파일 300/300 프레임 |
 | mjpeg_raw | AVI 헤더 없는 MJPEG 프레임 + 사진 1장 | 59/60 프레임 (잘린 첫 프레임 제외), 사진은 영상으로 만들지 않음 |
 | jdr_ring | G-NET식 3채널 링 파일 4개, 2바퀴째가 GOP 중간까지 덮어씀 | 2바퀴째 3채널 375/375, 1바퀴째 남은 부분 각 210/600 원본 동일 + 키프레임 앞 15프레임은 손상 상태로 저장 |
 

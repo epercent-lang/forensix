@@ -1,4 +1,4 @@
-//! FAT32 and exFAT metadata: deleted directory entries and allocation maps.
+//! FAT32 and exFAT metadata (NTFS: see ntfs.rs): deleted directory entries and allocation maps.
 //!
 //! References: Microsoft "FAT32 File System Specification" (FAT: General
 //! Overview of On-Disk Format) and Microsoft "exFAT File System Specification".
@@ -71,6 +71,7 @@ pub fn analyze(src: &Source, vol: &Volume) -> Result<Option<FsInfo>> {
     match vol.kind {
         FsKind::Fat32 => Fat32::open(src, vol)?.analyze().map(Some),
         FsKind::ExFat => ExFat::open(src, vol)?.analyze().map(Some),
+        FsKind::Ntfs => crate::ntfs::Ntfs::open(src, vol)?.analyze().map(Some),
         FsKind::Unknown => Ok(None),
     }
 }

@@ -14,6 +14,7 @@ mod io;
 mod jdr;
 mod mjpeg;
 mod mp4;
+mod ntfs;
 mod progress;
 mod ranges;
 mod report;

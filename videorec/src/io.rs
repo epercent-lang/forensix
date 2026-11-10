@@ -81,6 +81,7 @@ impl Source {
 pub enum FsKind {
     Fat32,
     ExFat,
+    Ntfs,
     Unknown,
 }
 
@@ -97,6 +98,9 @@ pub fn detect_fs(boot: &[u8]) -> FsKind {
     }
     if &boot[3..11] == b"EXFAT   " {
         return FsKind::ExFat;
+    }
+    if &boot[3..11] == b"NTFS    " && boot[510] == 0x55 && boot[511] == 0xAA {
+        return FsKind::Ntfs;
     }
     if &boot[82..90] == b"FAT32   " && boot[510] == 0x55 && boot[511] == 0xAA {
         return FsKind::Fat32;
@@ -118,6 +122,39 @@ pub fn find_volumes(src: &Source) -> Result<Vec<Volume>> {
         }]);
     }
     let mut vols = Vec::new();
+    // GPT (UEFI specification, ch. 5): header at LBA 1, protective MBR type 0xEE.
+    let mut h = [0u8; 512];
+    if src.len() >= 1024 {
+        src.read_exact_at(512, &mut h)?;
+    }
+    if &h[0..8] == b"EFI PART" {
+        let lba = u64::from_le_bytes(h[72..80].try_into().unwrap());
+        let n = u32::from_le_bytes(h[80..84].try_into().unwrap()).min(1024) as u64;
+        let esz = u32::from_le_bytes(h[84..88].try_into().unwrap()) as u64;
+        if (128..=4096).contains(&esz) {
+            let tab = src.read_vec(lba * 512, (n * esz) as usize)?;
+            for i in 0..n as usize {
+                let e = &tab[i * esz as usize..(i + 1) * esz as usize];
+                if e[0..16].iter().all(|&b| b == 0) {
+                    continue;
+                }
+                let first = u64::from_le_bytes(e[32..40].try_into().unwrap());
+                let last = u64::from_le_bytes(e[40..48].try_into().unwrap());
+                let offset = first * 512;
+                if last < first || offset >= src.len() {
+                    continue;
+                }
+                let mut b = [0u8; 512];
+                src.read_exact_at(offset, &mut b)?;
+                vols.push(Volume {
+                    offset,
+                    length: ((last - first + 1) * 512).min(src.len() - offset),
+                    kind: detect_fs(&b),
+                });
+            }
+            return Ok(vols);
+        }
+    }
     if s0[510] == 0x55 && s0[511] == 0xAA {
         for i in 0..4 {
             let e = &s0[446 + i * 16..446 + (i + 1) * 16];

@@ -308,6 +308,34 @@ def jdr_pass(streams, pas, start_ms):
     return slots
 
 
+# ------------------------------------------------------------- GPT (UEFI spec)
+
+def write_gpt(path, first, last):
+    """Protective MBR + primary GPT with one Basic Data partition."""
+    import uuid
+    import zlib
+    total = os.path.getsize(path) // 512
+    mbr = bytearray(512)
+    mbr[446:462] = bytes([0, 0, 2, 0, 0xEE, 0xFF, 0xFF, 0xFF]) + struct.pack("<II", 1, min(total - 1, 0xFFFFFFFF))
+    mbr[510:512] = b"\x55\xAA"
+    entry = bytearray(128)
+    entry[0:16] = uuid.UUID("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7").bytes_le
+    entry[16:32] = uuid.uuid4().bytes_le
+    entry[32:48] = struct.pack("<QQ", first, last)
+    entry[56:56 + 8] = "NVR".encode("utf-16-le") + b"\0\0"
+    table = bytes(entry) + bytes(128 * 127)
+    hdr = bytearray(92)
+    hdr[0:8] = b"EFI PART"
+    struct.pack_into("<IIIIQQQQ", hdr, 8, 0x00010000, 92, 0, 0, 1, total - 1, 34, total - 34)
+    hdr[56:72] = uuid.uuid4().bytes_le
+    struct.pack_into("<QIII", hdr, 72, 2, 128, 128, zlib.crc32(table))
+    struct.pack_into("<I", hdr, 16, zlib.crc32(bytes(hdr)))
+    with open(path, "r+b") as f:
+        f.write(mbr)
+        f.write(bytes(hdr) + bytes(420))
+        f.write(table)
+
+
 # ------------------------------------------------------------------- scenarios
 
 def main():
@@ -453,6 +481,36 @@ def main():
         f.write(open(v("M.avi"), "rb").read()[8192:])
         f.write(os.urandom(MB))
     truth["mjpeg_raw"] = {"expect": ["M.avi"], "live": [], "min_share": {"M.avi": 0.9}}
+
+    # 10. NTFS volume in a GPT disk (CCTV export PCs, NVR USB backups),
+    #     files deleted. Needs mkntfs and ntfs-3g (FUSE) to build.
+    if shutil.which("mkntfs") and shutil.which("ntfs-3g"):
+        vol = os.path.join(work, "ntfs_vol.tmp")
+        mnt = os.path.join(work, "ntfs_mnt")
+        if os.path.exists(vol):
+            os.remove(vol)
+        run("truncate", "-s", "96M", vol)
+        run("mkntfs", "-F", "-q", "-Q", "-c", "4096", "-p", "2048", "-H", "0", "-S", "0", vol)
+        os.makedirs(mnt, exist_ok=True)
+        run("ntfs-3g", vol, mnt)
+        try:
+            os.makedirs(os.path.join(mnt, "NVR", "ch01"), exist_ok=True)
+            for n in ("A.mp4", "B.mp4", "C.mp4", "E.mp4"):
+                shutil.copy(v(n), os.path.join(mnt, "NVR", "ch01", n))
+            for n in ("A.mp4", "C.mp4", "E.mp4"):
+                os.remove(os.path.join(mnt, "NVR", "ch01", n))
+        finally:
+            run("umount", mnt)
+        img = os.path.join(work, "ntfs_gpt.img")
+        if os.path.exists(img):
+            os.remove(img)
+        run("truncate", "-s", "100M", img)
+        write_gpt(img, 2048, 2048 + 196608 - 1)
+        with open(img, "r+b") as f, open(vol, "rb") as g:
+            f.seek(2048 * 512)
+            f.write(g.read())
+        os.remove(vol)
+        truth["ntfs_gpt"] = {"expect": ["A.mp4", "C.mp4", "E.mp4"], "live": ["B.mp4"]}
 
     json.dump(truth, open(os.path.join(work, "truth.json"), "w"), indent=2)
     print("images written to", work)
