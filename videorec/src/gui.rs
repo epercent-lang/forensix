@@ -90,6 +90,7 @@ struct Req {
     path: String,
     query: Vec<(String, String)>,
     token: String,
+    range: Option<String>,
     body: Vec<u8>,
 }
 
@@ -138,7 +139,7 @@ fn read_req(s: &mut TcpStream) -> Result<Option<Req>> {
     let mut it = line.split_whitespace();
     let method = it.next().unwrap_or("").to_string();
     let target = it.next().unwrap_or("/").to_string();
-    let (mut len, mut token) = (0usize, String::new());
+    let (mut len, mut token, mut range) = (0usize, String::new(), None);
     loop {
         let mut h = String::new();
         if r.read_line(&mut h)? == 0 || h.trim().is_empty() {
@@ -150,6 +151,8 @@ fn read_req(s: &mut TcpStream) -> Result<Option<Req>> {
                 len = v.trim().parse().unwrap_or(0);
             } else if k == "x-token" {
                 token = v.trim().to_string();
+            } else if k == "range" {
+                range = Some(v.trim().to_string());
             }
         }
     }
@@ -170,6 +173,7 @@ fn read_req(s: &mut TcpStream) -> Result<Option<Req>> {
         path: path.to_string(),
         query,
         token,
+        range,
         body,
     }))
 }
@@ -177,6 +181,8 @@ fn read_req(s: &mut TcpStream) -> Result<Option<Req>> {
 fn respond(s: &mut TcpStream, code: u16, ctype: &str, body: &[u8]) -> Result<()> {
     let reason = match code {
         200 => "OK",
+        206 => "Partial Content",
+        416 => "Range Not Satisfiable",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
@@ -199,11 +205,59 @@ fn handle(mut s: TcpStream, job: &Shared, token: &str) -> Result<()> {
         // The page reads the token from its own URL.
         return respond(&mut s, 200, "text/html; charset=utf-8", PAGE.as_bytes());
     }
+    // Media elements cannot send headers, so media URLs carry the token.
+    if req.path.starts_with("/media/") {
+        if req.q("t") != token {
+            return respond(&mut s, 403, "text/plain", b"bad token");
+        }
+        let file = if req.path == "/media/out" {
+            out_file(&req.q("out"), &req.q("f"))
+        } else {
+            cache_file(&req.path["/media/cache/".len().min(req.path.len())..])
+        };
+        return match file {
+            Ok(p) => serve_file(&mut s, &p, req.range.as_deref()),
+            Err(e) => respond(&mut s, 404, "text/plain", format!("{e:#}").as_bytes()),
+        };
+    }
     if !req.path.starts_with("/api/") {
         return respond(&mut s, 404, "text/plain", b"not found");
     }
     if req.token != token {
         return respond(&mut s, 403, "text/plain", b"bad token");
+    }
+    if req.path == "/api/thumb" {
+        let r = out_file(&req.q("out"), &req.q("f")).and_then(|p| crate::preview::thumb(&p));
+        return match r {
+            Ok(crate::preview::Thumb::Mp4(p)) => {
+                let b = std::fs::read(p)?;
+                respond(&mut s, 200, "video/mp4", &b)
+            }
+            Ok(crate::preview::Thumb::Jpeg(b)) => respond(&mut s, 200, "image/jpeg", &b),
+            Err(e) => respond(
+                &mut s,
+                404,
+                "text/plain; charset=utf-8",
+                format!("{e:#}").as_bytes(),
+            ),
+        };
+    }
+    if req.path == "/api/preview" {
+        let r = out_file(&req.q("out"), &req.q("f")).and_then(|p| crate::preview::preview(&p, 120));
+        let v = match r {
+            Ok(p) => {
+                let name = |x: &Path| x.file_name().unwrap().to_string_lossy().into_owned();
+                json!({
+                    "video": format!("/media/cache/{}?t={token}", name(&p.video)),
+                    "audio": p.audio.as_ref().map(|a| format!("/media/cache/{}?t={token}", name(a))),
+                    "seconds": p.seconds,
+                    "truncated": p.truncated,
+                    "skipped_leading": p.skipped_leading,
+                })
+            }
+            Err(e) => json!({"error": format!("{e:#}")}),
+        };
+        return respond(&mut s, 200, "application/json", v.to_string().as_bytes());
     }
     let r = api(&req, job);
     let (code, v) = match r {
@@ -211,6 +265,102 @@ fn handle(mut s: TcpStream, job: &Shared, token: &str) -> Result<()> {
         Err(e) => (400, json!({"error": format!("{e:#}")})),
     };
     respond(&mut s, code, "application/json", v.to_string().as_bytes())
+}
+
+/// A recovered file: `rel` must stay inside `out`.
+fn out_file(out: &str, rel: &str) -> Result<PathBuf> {
+    anyhow::ensure!(
+        !out.is_empty()
+            && !rel.is_empty()
+            && !Path::new(rel).is_absolute()
+            && !rel.split(['/', '\\']).any(|c| c == ".." || c.contains(':')),
+        "bad file path"
+    );
+    let p = Path::new(out).join(rel);
+    anyhow::ensure!(p.is_file(), "{} not found", p.display());
+    Ok(p)
+}
+
+fn cache_file(name: &str) -> Result<PathBuf> {
+    anyhow::ensure!(
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            && !name.contains(".."),
+        "bad name"
+    );
+    let p = crate::preview::cache_dir().join(name);
+    anyhow::ensure!(p.is_file(), "not in cache");
+    Ok(p)
+}
+
+/// Serves a file with HTTP Range support (needed for seeking in <video>).
+fn serve_file(s: &mut TcpStream, p: &Path, range: Option<&str>) -> Result<()> {
+    let mut f = std::fs::File::open(p)?;
+    let size = f.metadata()?.len();
+    let ctype = match p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mp4" => "video/mp4",
+        "wav" => "audio/wav",
+        "avi" => "video/x-msvideo",
+        _ => "application/octet-stream",
+    };
+    let (mut a, mut b) = (0u64, size.saturating_sub(1));
+    let mut partial = false;
+    if let Some(r) = range.and_then(|r| r.strip_prefix("bytes=")) {
+        let (x, y) = r.split_once('-').unwrap_or((r, ""));
+        if x.is_empty() {
+            let n: u64 = y.parse().unwrap_or(0);
+            a = size.saturating_sub(n);
+        } else {
+            a = x.parse().unwrap_or(0);
+            if let Ok(e) = y.parse::<u64>() {
+                b = e.min(b);
+            }
+        }
+        partial = true;
+        if a >= size || a > b {
+            write!(
+                s,
+                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{size}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )?;
+            return Ok(());
+        }
+    }
+    let len = if size == 0 { 0 } else { b - a + 1 };
+    if partial {
+        write!(
+            s,
+            "HTTP/1.1 206 Partial Content\r\nContent-Type: {ctype}\r\nContent-Length: {len}\r\nContent-Range: bytes {a}-{b}/{size}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+        )?;
+    } else {
+        write!(
+            s,
+            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {len}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+        )?;
+    }
+    use std::io::Seek;
+    f.seek(std::io::SeekFrom::Start(a))?;
+    let mut left = len;
+    let mut buf = vec![0u8; 1 << 20];
+    while left > 0 {
+        let want = left.min(buf.len() as u64) as usize;
+        let n = f.read(&mut buf[..want])?;
+        if n == 0 {
+            break;
+        }
+        if s.write_all(&buf[..n]).is_err() {
+            break; // the browser closed the connection (seek or pause)
+        }
+        left -= n as u64;
+    }
+    Ok(())
 }
 
 fn body(req: &Req) -> Result<Value> {

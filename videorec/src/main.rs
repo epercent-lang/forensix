@@ -16,6 +16,7 @@ mod jdr;
 mod mjpeg;
 mod mp4;
 mod ntfs;
+mod preview;
 mod progress;
 mod ranges;
 mod recorder;

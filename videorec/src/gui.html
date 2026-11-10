@@ -58,6 +58,40 @@ pre.log{margin:0;max-height:220px;overflow:auto;background:#16181D;color:#E6E8EE
 .modal ul{list-style:none;margin:0;padding:0;overflow:auto;max-height:50vh;border:1px solid #EEF0F4;border-radius:8px}
 .modal li button{all:unset;display:flex;justify-content:space-between;width:100%;box-sizing:border-box;padding:10px 12px;cursor:pointer}
 .modal li button:hover,.modal li button:focus-visible{background:#EAF0FC}
+.res{display:grid;grid-template-columns:280px minmax(0,1fr) 360px;height:calc(100vh - 62px)}
+.res-left,.res-right{background:#fff;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.res-left{border-right:1px solid #DDE1E8}.res-right{border-left:1px solid #DDE1E8}
+.res-mid{overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+button.b.sm{min-height:36px;padding:0 10px;font-size:13px}
+.seg{display:flex;border:1px solid #C3C8D2;border-radius:8px;overflow:hidden}
+.seg button{all:unset;flex:1;text-align:center;padding:8px 4px;cursor:pointer;font-size:13px}
+.seg button.on{background:#16181D;color:#fff}
+.seg button span{font-size:11px;opacity:.75}
+.tree{display:flex;flex-direction:column;font-size:14px;border-top:1px solid #EEF0F4;padding-top:8px}
+.tree button{all:unset;display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;cursor:pointer}
+.tree button:hover{background:#F4F5F7}.tree button.on{background:#EAF0FC;color:#163C8C;font-weight:500}
+.tree button:focus-visible{outline:2px solid #1F4FB8}
+.tree .n{margin-left:auto;font-size:12px;color:#4A5060}
+.tree .tw{width:14px;text-align:center;color:#4A5060}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:12px}
+.tile{background:#fff;border:1px solid #DDE1E8;border-radius:8px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column}
+.tile.on{outline:2px solid #1F4FB8;border-color:#1F4FB8}
+.tile .th{position:relative;aspect-ratio:16/9;background:#2A2E38;display:flex;align-items:center;justify-content:center;color:#C9CDD6;font-size:11px;text-align:center}
+.tile .th img{width:100%;height:100%;object-fit:cover;display:block}
+.tile .bd{position:absolute;top:6px;left:6px;display:flex;gap:4px}
+.tile .ck{position:absolute;top:6px;right:6px;width:18px;height:18px}
+.tile .du{position:absolute;bottom:6px;right:6px;background:rgba(22,24,29,.75);color:#fff;font-size:11px;padding:1px 5px;border-radius:4px}
+.tile .cap{padding:6px 8px;font-size:12px;line-height:1.35}
+.tile .cap .f{color:#4A5060;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bdg{font-size:11px;padding:1px 6px;border-radius:999px;font-weight:500}
+.bdg.del{background:#FDECEC;color:#8A1C1C}.bdg.live{background:#EAF0FC;color:#163C8C}.bdg.bad{background:#FCEFE5;color:#7A3407}.bdg.good{background:#E8F5EC;color:#1D5B33}
+.res-bar{position:sticky;bottom:-16px;background:#F4F5F7;padding:12px 0;display:flex;gap:8px;align-items:center;border-top:1px solid #DDE1E8;margin-top:auto}
+.player{position:relative;background:#000;border-radius:8px;overflow:hidden;aspect-ratio:16/9}
+.player video{width:100%;height:100%;display:block}
+.pvmsg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;color:#E6E8EE;font-size:13px;padding:16px;background:#16181D}
+dl.props{display:grid;grid-template-columns:96px minmax(0,1fr);gap:6px 10px;margin:0;font-size:13px}
+dl.props dt{color:#4A5060}dl.props dd{margin:0}
+@media (max-width:1100px){.res{grid-template-columns:240px minmax(0,1fr);height:auto}.res-right{grid-column:1/-1}}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -178,60 +212,74 @@ pre.log{margin:0;max-height:220px;overflow:auto;background:#16181D;color:#E6E8EE
 </main>
 
 <!-- 3 결과 -->
-<main id="s3" hidden>
-  <section class="col">
-    <div class="card">
-      <div class="row">
-        <label style="font-weight:500" for="resOut">결과 폴더</label>
-        <input type="text" id="resOut" class="mono" style="flex:1">
-        <button class="b" data-browse="resOut">찾아보기</button>
-        <button class="b" id="btnLoad">불러오기</button>
-      </div>
-      <div id="resErr" class="err" hidden></div>
-      <div class="row">
-        <select id="fCam"><option value="">카메라 전체</option></select>
-        <select id="fDay"><option value="">날짜 전체</option></select>
-        <select id="fSt"><option value="">상태 전체</option><option value="ok">정상</option><option value="partial">손상 (일부만 재생)</option></select>
-        <input type="text" id="fQ" placeholder="이름 검색" style="flex:1">
-      </div>
-      <div id="resSum" class="small muted"></div>
-      <div id="lanes" style="display:flex;flex-direction:column;gap:6px"></div>
+<div id="s3" class="res" hidden>
+  <aside class="res-left">
+    <div class="row" style="gap:6px">
+      <input type="text" id="resOut" class="mono" style="flex:1;min-height:36px" aria-label="결과 폴더">
+      <button class="b sm" data-browse="resOut">찾기</button>
+      <button class="b sm" id="btnLoad">열기</button>
     </div>
-    <div class="row">
+    <div id="resErr" class="err" hidden></div>
+    <div role="tablist" class="seg" id="originSeg">
+      <button data-o="" class="on">전체 <span></span></button>
+      <button data-o="live">남아 있음 <span></span></button>
+      <button data-o="deleted">삭제됨 <span></span></button>
+    </div>
+    <div class="row small" style="gap:12px">
+      <label><input type="checkbox" id="fOk" checked> 온전 <span id="cOk" class="muted"></span></label>
+      <label><input type="checkbox" id="fBad" checked> 손상 <span id="cBad" class="muted"></span></label>
+    </div>
+    <div class="row small" id="camBox" style="gap:12px"></div>
+    <div class="tree" id="tree3" role="tree" aria-label="날짜별"></div>
+    <p class="small muted" style="margin:0">"삭제됨"에는 지워진 파일, 빈 공간에서 찾은 영상, 링 녹화에서 아직 덮어쓰이지 않은 옛 영상이 들어갑니다.</p>
+  </aside>
+  <section class="res-mid">
+    <div class="row" style="gap:8px">
+      <input type="text" id="fQ" placeholder="파일 이름 검색" style="flex:1;min-height:36px">
+      <select id="fSort" style="min-height:36px"><option value="new">최신순</option><option value="old">오래된순</option><option value="name">이름순</option></select>
+      <button class="b sm" id="btnAll">보이는 것 모두 선택</button>
+      <button class="b sm" id="btnNone">선택 해제</button>
+    </div>
+    <div id="resSum" class="small muted"></div>
+    <div class="grid" id="grid"></div>
+    <div style="text-align:center"><button class="b" id="btnMore" hidden>더 보기</button></div>
+    <div class="res-bar">
       <span id="selCount" class="muted">선택 0개</span>
-      <button class="b" id="btnAll">보이는 것 모두 선택</button>
-      <button class="b" id="btnNone">선택 해제</button>
-      <button class="p" data-go="4">선택한 것 내보내기</button>
+      <button class="p" id="btnSaveSel" style="margin-left:auto">선택한 파일 저장</button>
+      <button class="b" id="btnSaveVis">보이는 파일 모두 저장</button>
     </div>
-    <div class="tbl">
-      <table>
-        <thead><tr><th style="width:56px">선택</th><th>녹화 시각</th><th>카메라</th><th>길이</th><th>크기</th><th>소리</th><th>상태</th></tr></thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </div>
-    <div id="more" class="small muted"></div>
   </section>
-  <aside>
-    <div class="card" id="detail" hidden>
-      <h2 id="dFile" class="mono" style="word-break:break-all;font-size:13px"></h2>
-      <div class="kv">
-        <div><div class="k">녹화 시각</div><div id="dTime"></div></div>
-        <div><div class="k">카메라</div><div id="dCam"></div></div>
-        <div><div class="k">길이</div><div id="dLen"></div></div>
-        <div><div class="k">프레임</div><div id="dFrames"></div></div>
-        <div><div class="k">원본 위치</div><div id="dOff" class="mono small"></div></div>
-        <div><div class="k">들어 있던 파일</div><div id="dIn" class="small"></div></div>
+  <aside class="res-right">
+    <div id="detailEmpty" class="muted small" style="padding:24px 4px">영상을 고르면 여기서 미리 보고 자세한 정보를 볼 수 있습니다.</div>
+    <div id="detail" hidden style="display:flex;flex-direction:column;gap:10px">
+      <div class="player">
+        <video id="pv" controls playsinline></video>
+        <audio id="pa" preload="auto"></audio>
+        <div id="pvMsg" class="pvmsg" hidden></div>
       </div>
-      <div class="small mono muted" id="dSha" style="word-break:break-all"></div>
-      <div id="dNote" style="background:#F4F5F7;border-radius:8px;padding:12px 14px;font-size:13px"></div>
+      <div id="pvNote" class="small muted"></div>
+      <h2 id="dFile" class="mono" style="word-break:break-all;font-size:13px"></h2>
+      <div class="row" style="gap:6px" id="dBadges"></div>
+      <dl class="props">
+        <dt>녹화 시각</dt><dd id="dTime"></dd>
+        <dt>카메라</dt><dd id="dCam"></dd>
+        <dt>길이</dt><dd id="dLen"></dd>
+        <dt>크기</dt><dd id="dSize"></dd>
+        <dt>프레임</dt><dd id="dFrames"></dd>
+        <dt>소리 트랙</dt><dd id="dAudio"></dd>
+        <dt>찾은 방법</dt><dd id="dHow"></dd>
+        <dt>원본 위치</dt><dd id="dOff" class="mono small"></dd>
+        <dt>들어 있던 파일</dt><dd id="dIn" class="small"></dd>
+        <dt>SHA-256</dt><dd id="dSha" class="mono small" style="word-break:break-all"></dd>
+      </dl>
+      <div id="dNote" style="background:#F4F5F7;border-radius:8px;padding:10px 12px;font-size:13px;white-space:pre-line"></div>
       <div class="row">
-        <button class="p" id="btnPlay">재생 (기본 플레이어)</button>
+        <button class="b" id="btnPlay">기본 플레이어로 열기</button>
         <button class="b" id="btnReveal">폴더에서 보기</button>
       </div>
     </div>
-    <div class="note">"이전 바퀴"는 링 녹화에서 아직 덮어쓰이지 않고 남은 옛 영상입니다. 손상(주황)은 키프레임이 없어 화면 일부만 나옵니다.</div>
   </aside>
-</main>
+</div>
 
 <!-- 4 내보내기 -->
 <main id="s4" hidden style="max-width:1200px">
@@ -392,59 +440,211 @@ async function poll() {
 }
 
 // ---- 3 results
-const cam = it => it.channel != null ? 'CAM' + (it.channel + 1) : '—';
-const audioOf = it => /audio: (\d+) AD/.test(it.notes || '') ? '있음' : (it.kind == 'jdr_clip' ? '없음' : '—');
+const cam = it => it.channel != null ? 'CAM' + (it.channel + 1) : '';
 const older = it => /earlier (ring )?pass/i.test(it.notes || '');
+const hasAudio = it => /audio: (\d+) AD/.test(it.notes || '');
+const origin = it => (it.kind == 'jdr_clip' ? older(it) : !it.live_file) ? 'deleted' : 'live';
+const good = it => it.status == 'ok';
+const when = it => it.start_time || it.modified || '';
+const how = it => ({
+  fs_deleted_file: '지워진 파일 (파일시스템 기록으로 되살림)',
+  carved_container: '지워진 파일 (빈 공간에서 찾은 온전한 파일)',
+  carved_stream: '영상 조각 (프레임을 이어 붙임)',
+  carved_mjpeg: '영상 조각 (JPEG 프레임을 이어 붙임)',
+  jdr_clip: '녹화기 형식 (.jdr)'
+}[it.kind] || it.kind) + (it.kind == 'jdr_clip' ? (older(it) ? ', 링 녹화에서 덮어쓰이기 전 남은 옛 영상' : ', 지금 카드에 남아 있는 녹화') : '');
+st.node = ''; st.origin = ''; st.shown = 300; st.thumbs = new Map(); st.camOff = new Set(); st.open = new Set();
+
 async function loadReport() {
   const out = $('resOut').value.trim(); if (!out) return;
   $('resErr').hidden = true;
   try {
     const r = await api('/api/report?out=' + encodeURIComponent(out));
-    st.report = r; st.items = r.items; st.sel.clear(); st.cur = null;
-    const cams = [...new Set(st.items.map(cam))].sort();
-    $('fCam').innerHTML = '<option value="">카메라 전체</option>' + cams.map(c => `<option>${c}</option>`).join('');
-    const days = [...new Set(st.items.map(i => (i.start_time || '').slice(0, 10)).filter(Boolean))].sort().reverse();
-    $('fDay').innerHTML = '<option value="">날짜 전체</option>' + days.map(d => `<option>${d}</option>`).join('');
+    st.report = r; st.out = out;
+    st.items = r.items.filter(i => i.output && i.size > 0);
+    st.noFile = r.items.length - st.items.length;
+    st.sel.clear(); st.cur = null; st.node = ''; st.shown = 300; st.thumbs.clear(); st.camOff.clear();
+    const days = st.items.map(when).filter(Boolean).sort();
+    if (days.length) { const d = days[days.length - 1]; st.open = new Set([d.slice(0, 4), d.slice(0, 7)]); }
+    const cams = [...new Set(st.items.map(cam).filter(Boolean))].sort();
+    $('camBox').innerHTML = cams.map(c => `<label><input type="checkbox" data-cam="${c}" checked> ${c}</label>`).join('');
+    $('camBox').querySelectorAll('input').forEach(b => b.onchange = () => { b.checked ? st.camOff.delete(b.dataset.cam) : st.camOff.add(b.dataset.cam); st.shown = 300; render(); });
     $('hdrName').textContent = (r.summary.source || '').split(/[\\/]/).pop() + ' · 영상 ' + st.items.length.toLocaleString() + '개';
+    $('detail').hidden = true; $('detailEmpty').hidden = false;
     render(); show(3);
-  } catch (e) { $('resErr').textContent = e.message; $('resErr').hidden = false; }
+  } catch (e) { $('resErr').textContent = e.message; $('resErr').hidden = false; show(3); }
 }
 $('btnLoad').onclick = loadReport;
-['fCam', 'fDay', 'fSt'].forEach(id => $(id).onchange = render); $('fQ').oninput = render;
+$('originSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+  st.origin = b.dataset.o; $('originSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x == b)); st.shown = 300; render(); });
+['fOk', 'fBad'].forEach(id => $(id).onchange = () => { st.shown = 300; render(); });
+$('fSort').onchange = render; $('fQ').oninput = () => { st.shown = 300; render(); };
+$('btnMore').onclick = () => { st.shown += 300; render(); };
+
+// Items passing every filter except the date node (for tree counts).
+function baseFilter(i, skip) {
+  if (skip != 'origin' && st.origin && origin(i) != st.origin) return false;
+  if (skip != 'status' && !(good(i) ? $('fOk').checked : $('fBad').checked)) return false;
+  if (cam(i) && st.camOff.has(cam(i))) return false;
+  const q = $('fQ').value.trim().toLowerCase();
+  return !q || i.output.toLowerCase().includes(q);
+}
+function inNode(i) { const w = when(i); return !st.node || (st.node == '?' ? !w : w.startsWith(st.node)); }
+
+function renderTree(base) {
+  const by = {}; let unknown = 0;
+  for (const i of base) { const w = when(i); if (!w) { unknown++; continue; }
+    const y = w.slice(0, 4), m = w.slice(0, 7), d = w.slice(0, 10);
+    by[y] ??= {n: 0, m: {}}; by[y].n++; by[y].m[m] ??= {n: 0, d: {}}; by[y].m[m].n++; by[y].m[m].d[d] = (by[y].m[m].d[d] || 0) + 1; }
+  const node = (key, label, n, depth, kids) => {
+    const open = st.open.has(key);
+    return `<button role="treeitem" data-k="${key}" class="${st.node == key ? 'on' : ''}" style="padding-left:${6 + depth * 16}px" ${kids ? `aria-expanded="${open}"` : ''}>
+      <span class="tw" data-tw="${kids ? key : ''}">${kids ? (open ? '▾' : '▸') : ''}</span>${label}<span class="n">${n.toLocaleString()}</span></button>`;
+  };
+  let h = node('', '전체', base.length, 0, false);
+  for (const y of Object.keys(by).sort().reverse()) {
+    h += node(y, y + '년', by[y].n, 0, true);
+    if (!st.open.has(y)) continue;
+    for (const m of Object.keys(by[y].m).sort().reverse()) {
+      h += node(m, +m.slice(5) + '월', by[y].m[m].n, 1, true);
+      if (!st.open.has(m)) continue;
+      for (const d of Object.keys(by[y].m[m].d).sort().reverse()) h += node(d, +d.slice(8) + '일', by[y].m[m].d[d], 2, false);
+    }
+  }
+  if (unknown) h += node('?', '녹화 시각 모름', unknown, 0, false);
+  $('tree3').innerHTML = h;
+  $('tree3').querySelectorAll('button').forEach(b => b.onclick = e => {
+    const k = b.dataset.k;
+    if (e.target.dataset.tw || (st.node == k && b.hasAttribute('aria-expanded'))) { st.open.has(k) ? st.open.delete(k) : st.open.add(k); }
+    else { st.node = k; if (b.hasAttribute('aria-expanded')) st.open.add(k); }
+    st.shown = 300; render();
+  });
+}
+
 function render() {
-  const c = $('fCam').value, d = $('fDay').value, s = $('fSt').value, q = $('fQ').value.trim().toLowerCase();
-  st.vis = st.items.filter(i => (!c || cam(i) == c) && (!d || (i.start_time || '').startsWith(d)) && (!s || i.status == s) && (!q || i.output.toLowerCase().includes(q)))
-    .sort((a, b) => (b.start_time || '').localeCompare(a.start_time || ''));
-  const ok = st.vis.filter(i => i.status == 'ok').length;
-  $('resSum').textContent = `보이는 영상 ${st.vis.length.toLocaleString()}개 · 정상 ${ok.toLocaleString()} · 손상 ${(st.vis.length - ok).toLocaleString()} · ${gb(st.vis.reduce((a, i) => a + i.size, 0))}`;
-  // Day timeline per camera.
-  const day = d || st.vis.find(i => i.start_time)?.start_time?.slice(0, 10);
-  const lanes = [...new Set(st.items.map(cam))].filter(x => x != '—').sort();
-  const t0 = day ? Date.parse(day + 'T00:00:00Z') : 0;
-  $('lanes').innerHTML = day ? `<div class="small" style="font-weight:500">${day} 시간대 (파랑 정상, 주황 손상)</div>` + lanes.map(l => {
-    const segs = st.vis.filter(i => cam(i) == l && (i.start_time || '').startsWith(day)).map(i => {
-      const a = (Date.parse(i.start_time + 'Z') - t0) / 864e5, b = (Date.parse((i.end_time || i.start_time) + 'Z') - t0) / 864e5;
-      return `<div style="left:${(a * 100).toFixed(3)}%;width:${Math.max(0, (b - a) * 100).toFixed(3)}%;background:${i.status == 'ok' ? '#1F4FB8' : '#A3470A'}"></div>`;
-    }).join('');
-    return `<div class="lane"><span class="small mono" style="width:44px">${l}</span><div class="t">${segs}</div></div>`;
-  }).join('') + '<div class="lane small muted"><span style="width:44px"></span><div style="flex:1;display:flex;justify-content:space-between"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div></div>' : '';
-  const shown = st.vis.slice(0, 500);
-  $('rows').innerHTML = shown.map((i, k) => `<tr data-k="${k}" class="${st.cur == i ? 'sel' : ''}">
-    <td><input type="checkbox" aria-label="선택" ${st.sel.has(i.output) ? 'checked' : ''}></td>
-    <td class="mono small">${esc((i.start_time || i.modified || '').replace('T', ' ').slice(0, 19))}</td>
-    <td>${cam(i)}</td><td class="mono small">${i.duration_s != null ? dur(i.duration_s) : ''}</td>
-    <td class="mono small">${gb(i.size)}</td><td class="small">${audioOf(i)}</td>
-    <td><span class="chip ${i.status == 'ok' ? 'ok' : 'partial'}">${i.status == 'ok' ? '정상' : '손상'}${older(i) ? ' · 이전 바퀴' : ''}</span></td></tr>`).join('');
-  $('more').textContent = st.vis.length > 500 ? `처음 500개만 표시합니다. 거르기를 쓰면 더 좁힐 수 있습니다.` : '';
-  $('rows').querySelectorAll('tr').forEach(tr => {
-    const it = shown[+tr.dataset.k];
-    tr.onclick = e => { if (e.target.type == 'checkbox') { e.target.checked ? st.sel.add(it.output) : st.sel.delete(it.output); selCount(); return; } pick(it); };
+  if (!st.items) return;
+  const base = st.items.filter(i => baseFilter(i));
+  // Segment and status counts.
+  const segBase = st.items.filter(i => baseFilter(i, 'origin') && inNode(i));
+  const counts = {'': segBase.length, live: segBase.filter(i => origin(i) == 'live').length, deleted: segBase.filter(i => origin(i) == 'deleted').length};
+  $('originSeg').querySelectorAll('button').forEach(b => b.querySelector('span').textContent = counts[b.dataset.o].toLocaleString());
+  const stBase = st.items.filter(i => baseFilter(i, 'status') && inNode(i));
+  $('cOk').textContent = stBase.filter(good).length.toLocaleString(); $('cBad').textContent = stBase.filter(i => !good(i)).length.toLocaleString();
+  renderTree(base);
+  const srt = $('fSort').value;
+  st.vis = base.filter(inNode).sort((a, b) => srt == 'name' ? a.output.localeCompare(b.output)
+    : srt == 'old' ? when(a).localeCompare(when(b)) || a.id - b.id : when(b).localeCompare(when(a)) || a.id - b.id);
+  const ok = st.vis.filter(good).length;
+  $('resSum').textContent = `${st.vis.length.toLocaleString()}개 · 온전 ${ok.toLocaleString()} · 손상 ${(st.vis.length - ok).toLocaleString()} · ${gb(st.vis.reduce((a, i) => a + i.size, 0))}`
+    + (st.noFile ? ` · 파일로 만들지 못한 삭제 기록 ${st.noFile}개는 빼고 표시` : '');
+  const shown = st.vis.slice(0, st.shown);
+  $('grid').innerHTML = shown.map((i, k) => `<div class="tile ${st.cur == i ? 'on' : ''}" data-k="${k}" tabindex="0" role="button" aria-label="${esc(i.output)}">
+    <div class="th"><span class="ph">불러오는 중</span>
+      <div class="bd"><span class="bdg ${origin(i) == 'deleted' ? 'del' : 'live'}">${origin(i) == 'deleted' ? '삭제됨' : '남아 있음'}</span>${good(i) ? '' : '<span class="bdg bad">손상</span>'}</div>
+      <input type="checkbox" class="ck" aria-label="선택" ${st.sel.has(i.output) ? 'checked' : ''}>
+      ${i.duration_s != null ? `<span class="du">${dur(i.duration_s)}</span>` : ''}</div>
+    <div class="cap"><div>${esc(when(i).replace('T', ' ').slice(0, 19) || '시각 모름')} ${cam(i)}</div><div class="f">${esc(i.output.split('/').pop())}</div></div></div>`).join('');
+  $('btnMore').hidden = st.vis.length <= st.shown;
+  $('grid').querySelectorAll('.tile').forEach(t => {
+    const it = shown[+t.dataset.k];
+    t.onclick = e => { if (e.target.classList.contains('ck')) { e.target.checked ? st.sel.add(it.output) : st.sel.delete(it.output); selCount(); return; } pick(it); };
+    t.onkeydown = e => { if (e.key == 'Enter' || e.key == ' ') { e.preventDefault(); pick(it); } };
+    thumbInto(t.querySelector('.th'), it);
   });
   selCount();
 }
 function selCount() { $('selCount').textContent = `선택 ${st.sel.size.toLocaleString()}개`; }
 $('btnAll').onclick = () => { st.vis.forEach(i => st.sel.add(i.output)); render(); };
 $('btnNone').onclick = () => { st.sel.clear(); render(); };
+$('btnSaveSel').onclick = () => { document.querySelector('input[name=what][value=sel]').checked = true; show(4); };
+$('btnSaveVis').onclick = () => { document.querySelector('input[name=what][value=vis]').checked = true; show(4); };
+
+// ---- thumbnails: decoded one at a time from a one-frame MP4 and kept as JPEG
+const thumbQ = []; let thumbBusy = 0;
+const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { io.unobserve(e.target); thumbQ.push(e.target); pumpThumbs(); } }), {rootMargin: '300px'});
+function thumbInto(el, it) {
+  el._it = it;
+  const c = st.thumbs.get(it.output);
+  if (c) return setThumb(el, c); else io.observe(el);
+}
+function setThumb(el, c) {
+  const ph = el.querySelector('.ph'); if (!ph) return;
+  if (c.img) { const im = document.createElement('img'); im.alt = ''; im.src = c.img; ph.replaceWith(im); }
+  else ph.textContent = c.err;
+}
+async function pumpThumbs() {
+  while (thumbBusy < 2 && thumbQ.length) {
+    const el = thumbQ.shift(); if (!el.isConnected) continue;
+    thumbBusy++;
+    makeThumb(el._it).then(c => { st.thumbs.set(el._it.output, c); document.querySelectorAll('.tile .th').forEach(t => { if (t._it == el._it) setThumb(t, c); }); })
+      .finally(() => { thumbBusy--; pumpThumbs(); });
+  }
+}
+async function makeThumb(it) {
+  try {
+    const r = await fetch('/api/thumb?out=' + encodeURIComponent(st.out) + '&f=' + encodeURIComponent(it.output), {headers: {'X-Token': T}});
+    if (!r.ok) { const t = await r.text(); return {err: /key frame/.test(t) ? '키프레임이 없어 그림 없음' : '미리보기 없음'}; }
+    const blob = await r.blob(); const url = URL.createObjectURL(blob);
+    if (blob.type.startsWith('image/')) return {img: url};
+    const v = document.createElement('video'); v.muted = true; v.preload = 'auto'; v.src = url;
+    await new Promise((ok, bad) => { v.onloadeddata = ok; v.onerror = bad; setTimeout(bad, 8000); });
+    const cv = document.createElement('canvas'); const w = 320; cv.width = w; cv.height = Math.round(w * v.videoHeight / v.videoWidth) || 180;
+    cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
+    v.removeAttribute('src'); v.load(); URL.revokeObjectURL(url);
+    return {img: cv.toDataURL('image/jpeg', 0.8)};
+  } catch { return {err: it.codec == 'h265' ? 'H.265: 이 브라우저는 그림을 못 보여 줌' : '이 브라우저에서 그림을 만들지 못함'}; }
+}
+
+// ---- detail and preview
+const pv = $('pv'), pa = $('pa');
+function syncAudio() { if (!pa.src) return; if (Math.abs(pa.currentTime - pv.currentTime) > 0.25) pa.currentTime = pv.currentTime; }
+pv.onplay = () => { if (pa.src) { pa.currentTime = pv.currentTime; pa.play().catch(() => {}); } };
+pv.onpause = () => pa.pause();
+pv.onseeked = syncAudio; pv.ontimeupdate = syncAudio; pv.onratechange = () => pa.playbackRate = pv.playbackRate;
+pv.onvolumechange = () => { pa.volume = pv.volume; pa.muted = pv.muted; };
+function pvMsg(t) { $('pvMsg').textContent = t; $('pvMsg').hidden = !t; }
+async function pick(i) {
+  st.cur = i; $('detail').hidden = false; $('detailEmpty').hidden = true;
+  document.querySelectorAll('.tile').forEach(t => t.classList.toggle('on', st.vis[+t.dataset.k] == i));
+  $('dFile').textContent = i.output;
+  $('dBadges').innerHTML = `<span class="bdg ${origin(i) == 'deleted' ? 'del' : 'live'}">${origin(i) == 'deleted' ? '삭제됨' : '남아 있음'}</span><span class="bdg ${good(i) ? 'good' : 'bad'}">${good(i) ? '온전' : '손상 (일부만 재생)'}</span>`;
+  $('dTime').textContent = when(i).replace('T', ' ') + (i.end_time ? ' ~ ' + i.end_time.slice(11, 19) : '') || '모름';
+  $('dCam').textContent = (cam(i) || '—') + (i.width ? ` · ${i.width}×${i.height}` : '');
+  $('dLen').textContent = i.duration_s != null ? dur(i.duration_s) : '—';
+  $('dSize').textContent = gb(i.size) + ` (${i.size.toLocaleString()} B)`;
+  $('dFrames').textContent = i.frames != null ? `${i.frames.toLocaleString()} (키프레임 ${i.keyframes ?? 0})` : '—';
+  $('dAudio').textContent = hasAudio(i) ? '있음' : i.kind == 'jdr_clip' ? '없음 (그 시간대 소리 조각이 없음)' : '—';
+  $('dHow').textContent = how(i);
+  $('dOff').textContent = '0x' + i.source_start.toString(16) + ' – 0x' + i.source_end.toString(16);
+  $('dIn').textContent = i.live_file ? `${i.live_file} (+0x${(i.live_file_offset || 0).toString(16)})` : i.name_hint || '—';
+  $('dSha').textContent = i.sha256;
+  $('dNote').textContent = koNote(i.notes); $('dNote').title = i.notes || '';
+  // Preview: camera MP4 files play directly; others (AVI, recorder sound) go through the preview cache.
+  pv.pause(); pa.pause(); pa.removeAttribute('src'); pv.removeAttribute('src'); pv.load();
+  $('pvNote').textContent = ''; pvMsg('미리보기 준비 중…');
+  const direct = /\.mp4$/i.test(i.output) && i.kind != 'jdr_clip';
+  const usePreview = async () => {
+    const r = await api('/api/preview?out=' + encodeURIComponent(st.out) + '&f=' + encodeURIComponent(i.output));
+    if (st.cur != i) return;
+    if (r.error) { pvMsg(/key frame/.test(r.error) ? '키프레임이 없어 브라우저에서는 재생할 수 없습니다. "기본 플레이어로 열기"를 쓰세요.' : /Motion-JPEG/.test(r.error) ? 'MJPEG 영상은 "기본 플레이어로 열기"로 보세요.' : '미리보기를 만들지 못했습니다: ' + r.error); return; }
+    pv.src = r.video; if (r.audio) pa.src = r.audio;
+    const notes = [];
+    if (r.truncated) notes.push('미리보기는 처음 2분입니다. 전체는 기본 플레이어로 여세요.');
+    if (r.skipped_leading) notes.push(`키프레임 앞의 ${r.skipped_leading}프레임은 미리보기에서 뺐습니다.`);
+    if (!r.audio && hasAudio(i)) notes.push('소리는 기본 플레이어에서 들을 수 있습니다.');
+    $('pvNote').textContent = notes.join(' '); pvMsg('');
+  };
+  try {
+    if (direct) {
+      pv.onerror = () => { pv.onerror = null; if (st.cur != i) return;
+        if (i.codec == 'h265') { pvMsg('H.265 영상은 이 브라우저에서 재생되지 않을 수 있습니다. "기본 플레이어로 열기"를 쓰세요.'); return; }
+        usePreview().catch(e => pvMsg(e.message)); };
+      pv.src = `/media/out?t=${T}&out=${encodeURIComponent(st.out)}&f=${encodeURIComponent(i.output)}`; pvMsg('');
+    } else { pv.onerror = null; await usePreview(); }
+  } catch (e) { pvMsg(e.message); }
+}
+$('btnPlay').onclick = () => st.cur && api('/api/open', {path: join(st.out, st.cur.output)}).catch(e => alert(e.message));
+$('btnReveal').onclick = () => st.cur && api('/api/open', {path: join(st.out, st.cur.output), select: true}).catch(e => alert(e.message));
 function koNote(n) {
   return (n || '').split('; ').map(x => x
     .replace('timestamps from recorder', '시각은 녹화기 기록')
@@ -452,24 +652,11 @@ function koNote(n) {
     .replace('no audio found for this time', '이 시간대의 소리 없음')
     .replace(/^first (\d+) of (\d+) frames have no key frame before them, so their picture is damaged$/, '앞쪽 $1/$2 프레임은 키프레임이 없어 화면이 깨집니다')
     .replace(/^recorded before the current pass of this file began \(([^)]+)\) — left over from an earlier pass of the ring$/, '이 파일의 현재 바퀴($1)보다 먼저 녹화됨: 링의 이전 바퀴에서 남은 영상')
+    .replace('container structure verified', '파일 구조 검사 통과')
+    .replace(/^(\d+) of (\d+) frames before the first keyframe dropped$/, '첫 키프레임 앞의 $1/$2 프레임은 뺐습니다')
+    .replace('video only (audio not carved)', '영상만 (소리는 찾지 않음)')
   ).join('\n');
 }
-function pick(i) {
-  st.cur = i; $('detail').hidden = false;
-  $('dFile').textContent = i.output;
-  $('dTime').textContent = (i.start_time || '').replace('T', ' ') + (i.end_time ? ' ~ ' + i.end_time.slice(11, 19) : '');
-  $('dCam').textContent = cam(i) + (i.width ? ` · ${i.width}×${i.height}` : '');
-  $('dLen').textContent = i.duration_s != null ? dur(i.duration_s) : '';
-  $('dFrames').textContent = i.frames != null ? `${i.frames.toLocaleString()} (키프레임 ${i.keyframes ?? 0})` : '';
-  $('dOff').textContent = '0x' + i.source_start.toString(16) + ' – 0x' + i.source_end.toString(16);
-  $('dIn').textContent = i.live_file ? `${i.live_file} (+0x${(i.live_file_offset || 0).toString(16)})` : i.name_hint || '';
-  $('dSha').textContent = 'SHA-256 ' + i.sha256;
-  $('dNote').textContent = koNote(i.notes); $('dNote').title = i.notes || '';
-  $('dNote').style.whiteSpace = 'pre-line';
-  render();
-}
-$('btnPlay').onclick = () => st.cur && api('/api/open', {path: join($('resOut').value.trim(), st.cur.output)}).catch(e => alert(e.message));
-$('btnReveal').onclick = () => st.cur && api('/api/open', {path: join($('resOut').value.trim(), st.cur.output), select: true}).catch(e => alert(e.message));
 
 // ---- 4 export
 document.querySelectorAll('input[name=how]').forEach(r => r.onchange = renderExport);

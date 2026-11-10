@@ -222,7 +222,7 @@ pub fn parse_hvcc(p: &[u8]) -> Option<VideoConfig> {
 }
 
 /// Iterates child boxes of a container payload.
-fn children(p: &[u8]) -> Vec<(&[u8], &[u8])> {
+pub(crate) fn children(p: &[u8]) -> Vec<(&[u8], &[u8])> {
     let mut out = vec![];
     let mut i = 0;
     while i + 8 <= p.len() {
@@ -243,7 +243,7 @@ fn children(p: &[u8]) -> Vec<(&[u8], &[u8])> {
     out
 }
 
-fn child<'a>(p: &'a [u8], t: &[u8; 4]) -> Option<&'a [u8]> {
+pub(crate) fn child<'a>(p: &'a [u8], t: &[u8; 4]) -> Option<&'a [u8]> {
     children(p)
         .into_iter()
         .find(|(ty, _)| ty == t)
