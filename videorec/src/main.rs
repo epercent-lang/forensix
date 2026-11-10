@@ -121,6 +121,19 @@ enum Cmd {
         #[arg(long)]
         max_bytes: Option<u64>,
     },
+    /// Copy a raw byte range of the source (image or disk) to a file, for
+    /// examining an unknown recorder format. Reads only.
+    Dump {
+        image: PathBuf,
+        /// Start, in bytes (0x… for hex). Rounded down to a 512-byte sector.
+        #[arg(long, default_value = "0")]
+        offset: String,
+        /// Length with optional K/M/G suffix (binary units), e.g. 64M.
+        #[arg(long, default_value = "64M")]
+        len: String,
+        #[arg(short, long)]
+        out: PathBuf,
+    },
     /// Write clips from a session saved with `recover --save-session`,
     /// without scanning the source again (recorder formats only).
     Export {
@@ -377,6 +390,37 @@ fn export(
         "{} items; report: {}",
         items.len(),
         out.join("report.json").display()
+    );
+    Ok(())
+}
+
+fn parse_size(s: &str) -> Result<u64> {
+    let t = s.trim();
+    if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        return Ok(u64::from_str_radix(h, 16)?);
+    }
+    let (num, mul) = match t.chars().last().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => (&t[..t.len() - 1], 1u64 << 10),
+        Some('M') => (&t[..t.len() - 1], 1 << 20),
+        Some('G') => (&t[..t.len() - 1], 1 << 30),
+        _ => (t, 1),
+    };
+    Ok(num.trim().parse::<u64>().with_context(|| format!("not a size: {s}"))? * mul)
+}
+
+fn dump(image: &Path, offset: &str, len: &str, out: &Path) -> Result<()> {
+    let src = Source::open(image)?;
+    guard_output(image, out.parent().unwrap_or(Path::new(".")))?;
+    let start = parse_size(offset)? & !511;
+    let len = parse_size(len)?.min(4 << 30);
+    let end = (start + len).min(src.len());
+    anyhow::ensure!(start < end, "offset is past the end ({} bytes)", src.len());
+    copy_range(&src, start, end, out)?;
+    println!(
+        "{} bytes from {start:#x} written to {} (sha256 {})",
+        end - start,
+        out.display(),
+        report::sha256_file(out)?
     );
     Ok(())
 }
@@ -1132,6 +1176,12 @@ fn main() -> Result<()> {
             out,
             max_bytes,
         } => extract(&image, &path, &out, max_bytes),
+        Cmd::Dump {
+            image,
+            offset,
+            len,
+            out,
+        } => dump(&image, &offset, &len, &out),
         Cmd::Recover {
             image,
             out,
