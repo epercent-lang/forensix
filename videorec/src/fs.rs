@@ -73,6 +73,7 @@ pub fn analyze(src: &Source, vol: &Volume) -> Result<Option<FsInfo>> {
         FsKind::ExFat => ExFat::open(src, vol)?.analyze().map(Some),
         FsKind::Ntfs => crate::ntfs::Ntfs::open(src, vol)?.analyze().map(Some),
         FsKind::Ext => crate::ext4::Ext4::open(src, vol)?.analyze().map(Some),
+        FsKind::Xfs => crate::xfs::Xfs::open(src, vol)?.analyze().map(Some),
         FsKind::Unknown => Ok(None),
     }
 }

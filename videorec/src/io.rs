@@ -492,6 +492,7 @@ pub enum FsKind {
     Ntfs,
     /// ext2, ext3 or ext4.
     Ext,
+    Xfs,
     Unknown,
 }
 
@@ -524,6 +525,9 @@ fn detect_at(src: &Source, offset: u64, boot: &[u8]) -> FsKind {
     let k = detect_fs(boot);
     if k != FsKind::Unknown {
         return k;
+    }
+    if crate::xfs::is_xfs(boot) {
+        return FsKind::Xfs;
     }
     match src.read_vec(offset + 1024, 1024) {
         Ok(sb) if crate::ext4::is_ext(&sb) => FsKind::Ext,

@@ -30,6 +30,7 @@ mod recorder;
 mod report;
 mod session;
 mod stream;
+mod xfs;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -767,12 +768,42 @@ fn recover(
                     // Clusters skipped around allocated ones; copy but cannot verify.
                     let path = out.join(format!("fs_{id:05}_{name}"));
                     let mut f = std::fs::File::create(&path)?;
+                    let mut buf = vec![0u8; 4 << 20];
                     for &(a, b) in &d.extents {
-                        f.write_all(&src.read_vec(a, (b - a) as usize)?)?;
+                        let mut p = a;
+                        while p < b {
+                            let n = src.read_at(p, &mut buf[..((b - p) as usize).min(4 << 20)])?;
+                            if n == 0 {
+                                break;
+                            }
+                            f.write_all(&buf[..n])?;
+                            p += n as u64;
+                        }
                     }
+                    drop(f);
                     rec.output = path.file_name().unwrap().to_string_lossy().into();
-                    rec.status = "partial".into();
-                    rec.notes = format!("{} ({} extents); not verified", d.method, d.extents.len());
+                    // The pieces put together: is the result a sound file?
+                    let whole = Source::open(&path)?;
+                    let sound = match container::check_mp4(&whole, 0, whole.len())? {
+                        Some(c) => c.intact && c.end == whole.len(),
+                        None => container::check_avi(&whole, 0, whole.len())?
+                            .is_some_and(|c| c.intact && c.end == whole.len()),
+                    };
+                    if sound {
+                        for &(a, b) in &d.extents {
+                            covered.add(a, b);
+                        }
+                        rec.status = "ok".into();
+                        rec.notes = format!(
+                            "{} ({} extents); container structure verified",
+                            d.method,
+                            d.extents.len()
+                        );
+                    } else {
+                        rec.status = "partial".into();
+                        rec.notes =
+                            format!("{} ({} extents); not verified", d.method, d.extents.len());
+                    }
                 }
                 None => {
                     rec.status = "damaged".into();
