@@ -394,9 +394,29 @@ fn export(
         older += ol;
         items.extend(got);
     }
+    let mut dvr = serde_json::Value::Null;
+    if !ses.dvr.is_empty() {
+        progress::stage("read", ses.dvr.iter().map(|r| r.1 - r.0).sum(), quiet);
+        let mut cov = Ranges::new();
+        let mut st = dhav::Stats::default();
+        let (chunks, older_frames) = dhav::scan(&src, &ses.dvr, &mut cov, &mut st)?;
+        progress::end_stage();
+        let mut by_month = jdr::Stats::new();
+        let (mut got, d) = jdr::write_clips(&src, &chunks, out, items.len() + 1, o, &mut by_month)?;
+        let mut old = 0;
+        for r in got.iter_mut() {
+            if older_frames.contains(&r.source_start) {
+                old += 1;
+                r.notes.push_str("; older footage: found after newer recording in the same 2 MiB area of the disk, i.e. left over where the recorder has since written");
+            }
+        }
+        dvr = serde_json::json!({"dvr_frames": st, "dvr_clips_older_footage": old,
+            "dvr_segments_discarded": d, "dvr_by_month": by_month});
+        items.extend(got);
+    }
     let summary = serde_json::json!({
         "source": image.display().to_string(), "source_size": src.len(),
-        "session": session_path.display().to_string(),
+        "session": session_path.display().to_string(), "dvr": dvr,
         "jdr_chunks": total, "jdr_runs_not_matching_session": broken,
         "jdr_clips_from_earlier_pass": older, "jdr_segments_discarded": discarded,
         "jdr_by_month": stats,
@@ -821,10 +841,6 @@ fn recover(
         }
     }
     covered.normalize();
-    if let Some(p) = &clip_extra.save_session {
-        session::Session::new(&src, image, session_vols)?.save(p)?;
-        eprintln!("session saved: {}", p.display());
-    }
     if !jdr_vols.is_empty() {
         summary.insert("jdr_chunks".into(), jdr_chunks_total.into());
         summary.insert("jdr_clips_from_earlier_pass".into(), jdr_older.into());
@@ -842,6 +858,7 @@ fn recover(
     }
 
     // Dahua DVR/NVR frames: camera and time in every frame header.
+    let mut session_dvr: Vec<(u64, u64)> = vec![];
     let dahua_disk = recorder::detect(&src)?
         .iter()
         .any(|h| h.system.starts_with("Dahua"));
@@ -881,10 +898,15 @@ fn recover(
         summary.insert("dvr_by_month".into(), serde_json::to_value(&by_month)?);
         items.extend(got);
         cov.normalize();
+        session_dvr = cov.iter().collect();
         for (s, e) in cov.iter() {
             covered.add(s, e);
         }
         covered.normalize();
+    }
+    if let Some(p) = &clip_extra.save_session {
+        session::Session::new(&src, image, session_vols, session_dvr)?.save(p)?;
+        eprintln!("session saved: {}", p.display());
     }
 
     // Stages 2 and 3 in one read: intact containers, H.264/H.265 streams,

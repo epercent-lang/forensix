@@ -29,6 +29,9 @@ pub struct Session {
     /// SHA-256 of the first and last MiB of the source.
     pub fingerprint: String,
     pub jdr: Vec<JdrVolume>,
+    /// Byte runs made of back-to-back Dahua (DHAV) frames.
+    #[serde(default)]
+    pub dvr: Vec<(u64, u64)>,
 }
 
 pub fn fingerprint(src: &Source) -> Result<String> {
@@ -40,7 +43,12 @@ pub fn fingerprint(src: &Source) -> Result<String> {
 }
 
 impl Session {
-    pub fn new(src: &Source, image: &Path, jdr: Vec<JdrVolume>) -> Result<Self> {
+    pub fn new(
+        src: &Source,
+        image: &Path,
+        jdr: Vec<JdrVolume>,
+        dvr: Vec<(u64, u64)>,
+    ) -> Result<Self> {
         Ok(Session {
             format: MAGIC.into(),
             tool: format!("videorec {}", env!("CARGO_PKG_VERSION")),
@@ -48,6 +56,7 @@ impl Session {
             source_size: src.len(),
             fingerprint: fingerprint(src)?,
             jdr,
+            dvr,
         })
     }
 
