@@ -17,6 +17,7 @@ mod io;
 mod jdr;
 mod mjpeg;
 mod mp4;
+mod mp4fix;
 mod mpeg4v;
 mod multi;
 mod ntfs;
@@ -871,6 +872,7 @@ fn recover(
         mpeg4: !no_streams && !clip_extra.no_mpeg4,
     };
     let mut damaged_containers = 0usize;
+    let mut salvaged_containers = 0usize;
     let (mut discarded, mut chains_without_params) = (0, 0);
     let (mut mjpeg_runs_small, mut mpeg4_runs_small) = (0, 0);
     let mut read_passes = 0;
@@ -898,6 +900,7 @@ fn recover(
         src.set_block_cache(0);
         read_passes += 1;
         damaged_containers += got.damaged_containers;
+        salvaged_containers += got.salvaged_containers;
         discarded += got.discarded_small;
         chains_without_params += got.chains_without_params;
         mjpeg_runs_small += got.mjpeg_small;
@@ -911,6 +914,7 @@ fn recover(
         want.containers = false;
     }
     summary.insert("read_passes".into(), read_passes.into());
+    summary.insert("containers_kept_in_part".into(), salvaged_containers.into());
     summary.insert(
         "carving_bytes_read".into(),
         (src.bytes_read() - read_before).into(),

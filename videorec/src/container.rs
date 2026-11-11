@@ -24,6 +24,9 @@ pub struct Container {
     pub duration_s: Option<f64>,
     /// mvhd creation time (recorder clock; time zone not stated by the file).
     pub created: Option<String>,
+    /// For a damaged MP4 with an intact index: the part that can be kept
+    /// with all its tracks (see mp4fix.rs), and the file's top-level boxes.
+    pub fix: Option<(crate::mp4fix::Fix, Vec<mp4::BoxHit>)>,
 }
 
 /// Checks a candidate MP4 at `start` (limited to `limit`).
@@ -41,10 +44,26 @@ pub fn check_mp4(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
         config: None,
         duration_s: None,
         created: None,
+        fix: None,
     };
     if w.open_ended {
         c.note = "box chain runs past the readable area or mdat has size 0 (incomplete recording)"
             .into();
+        // Index before the data: what is left of the data can still be kept.
+        if let Some(moov) = w.boxes.iter().find(|b| &b.typ == b"moov")
+            && w.boxes.last().is_some_and(|b| &b.typ == b"mdat")
+            && moov.size <= 256 << 20
+        {
+            let data = src.read_vec(moov.offset + 8, (moov.size - 8) as usize)?;
+            c.created = mvhd_created(&data);
+            if let Some(t) = mp4::parse_moov(&data).iter().find_map(|t| t.config.clone()) {
+                let mut cfg = t;
+                cfg.origin = format!("moov@{:#x}", moov.offset);
+                c.config = Some(cfg);
+            }
+            c.fix = crate::mp4fix::plan(src, start, &w.boxes, &data, limit)?
+                .map(|f| (f, w.boxes.clone()));
+        }
         return Ok(Some(c));
     }
     if !w.has_moov {
@@ -97,6 +116,8 @@ pub fn check_mp4(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
         c.note = format!(
             "{bad} of {checked} video chunks do not start with a valid NAL unit (overwritten or fragmented)"
         );
+        c.fix =
+            crate::mp4fix::plan(src, start, &w.boxes, &data, c.end)?.map(|f| (f, w.boxes.clone()));
     }
     Ok(Some(c))
 }
@@ -228,6 +249,7 @@ pub fn check_avi(src: &Source, start: u64, limit: u64) -> Result<Option<Containe
         config: None,
         duration_s: None,
         created: None,
+        fix: None,
     }))
 }
 

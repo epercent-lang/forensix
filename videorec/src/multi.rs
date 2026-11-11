@@ -59,6 +59,7 @@ pub struct Params<'a> {
 pub struct Out {
     pub items: Vec<Recovered>,
     pub damaged_containers: usize,
+    pub salvaged_containers: usize,
     pub discarded_small: usize,
     pub chains_without_params: usize,
     pub mjpeg_small: usize,
@@ -106,6 +107,40 @@ fn container_item(
         } else {
             "container structure verified".into()
         },
+        ..Default::default()
+    })
+}
+
+fn salvaged_item(
+    src: &Source,
+    out: &Path,
+    id: usize,
+    c: &container::Container,
+    fix: &crate::mp4fix::Fix,
+    top: &[crate::mp4::BoxHit],
+) -> Result<Recovered> {
+    let path = out.join(format!("carved_{id:05}_{:012x}_part.mp4", c.start));
+    crate::mp4fix::write(src, c.start, top, fix, &path)?;
+    let info = c.config.as_ref().and_then(|x| x.sps_info());
+    Ok(Recovered {
+        id,
+        kind: "carved_container".into(),
+        output: path.file_name().unwrap().to_string_lossy().into(),
+        sha256: report::sha256_file(&path)?,
+        size: std::fs::metadata(&path)?.len(),
+        source_start: c.start,
+        source_end: c.start + fix.cutoff,
+        codec: c.config.as_ref().map(|x| x.codec.name().into()),
+        width: info.as_ref().map(|i| i.width),
+        height: info.as_ref().map(|i| i.height),
+        frames: Some(fix.video_kept),
+        duration_s: Some(fix.duration_s),
+        created: c.created.clone(),
+        status: "partial".into(),
+        notes: format!(
+            "MP4 with intact index but data cut off or overwritten: kept the first {} of {} video frames with {} track(s), {} of them audio, and the recorded timing; index rewritten for the kept part ({})",
+            fix.video_kept, fix.video_total, fix.tracks, fix.audio_tracks, c.note
+        ),
         ..Default::default()
     })
 }
@@ -183,6 +218,18 @@ pub fn pass(
                 let f = e.min(stop + LEAD);
                 if cpos < f {
                     let mut found = |c: container::Container| -> Result<u64> {
+                        if let (false, Some((fix, top))) = (c.intact, &c.fix) {
+                            // Index intact, data cut off: keep the part
+                            // before the damage with all its tracks.
+                            let id = p.ids.get();
+                            p.ids.set(id + 1);
+                            let end = c.start + fix.cutoff;
+                            containers.push(salvaged_item(src, out, id, &c, fix, top)?);
+                            o.salvaged_containers += 1;
+                            covered.insert(c.start, end);
+                            taken.found.insert(c.start, end);
+                            return Ok(end);
+                        }
                         if !c.intact {
                             o.damaged_containers += 1;
                             return Ok(0);
