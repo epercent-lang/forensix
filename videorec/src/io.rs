@@ -493,6 +493,7 @@ pub enum FsKind {
     /// ext2, ext3 or ext4.
     Ext,
     Xfs,
+    Btrfs,
     Unknown,
 }
 
@@ -530,7 +531,11 @@ fn detect_at(src: &Source, offset: u64, boot: &[u8]) -> FsKind {
         return FsKind::Xfs;
     }
     match src.read_vec(offset + 1024, 1024) {
-        Ok(sb) if crate::ext4::is_ext(&sb) => FsKind::Ext,
+        Ok(sb) if crate::ext4::is_ext(&sb) => return FsKind::Ext,
+        _ => {}
+    }
+    match src.read_vec(offset + 0x10000, 0x48) {
+        Ok(sb) if crate::btrfs::is_btrfs(&sb) => FsKind::Btrfs,
         _ => FsKind::Unknown,
     }
 }

@@ -7,6 +7,7 @@
 //! 3. frame-level carving of H.264/H.265 streams in what is left.
 
 mod avi;
+mod btrfs;
 mod codec;
 mod container;
 mod dhav;

@@ -570,6 +570,7 @@ fn info(path: &Path) -> Result<Value> {
                 FsKind::Ntfs => "NTFS",
                 FsKind::Ext => "ext2/3/4",
                 FsKind::Xfs => "XFS",
+                FsKind::Btrfs => "Btrfs",
                 FsKind::Unknown => "알 수 없음",
             },
             "live_files": fsi.as_ref().map(|f| f.live_files),
