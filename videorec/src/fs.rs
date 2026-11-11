@@ -75,6 +75,9 @@ pub fn analyze(src: &Source, vol: &Volume) -> Result<Option<FsInfo>> {
         FsKind::Ext => crate::ext4::Ext4::open(src, vol)?.analyze().map(Some),
         FsKind::Xfs => crate::xfs::Xfs::open(src, vol)?.analyze().map(Some),
         FsKind::Btrfs => crate::btrfs::Btrfs::open(src, vol)?.analyze().map(Some),
+        FsKind::HfsPlus => crate::hfsplus::HfsPlus::open(src, vol)?.analyze().map(Some),
+        FsKind::Jfs => crate::jfs::Jfs::open(src, vol)?.analyze().map(Some),
+        FsKind::Reiser | FsKind::Apfs => Ok(None),
         FsKind::Unknown => Ok(None),
     }
 }

@@ -494,6 +494,12 @@ pub enum FsKind {
     Ext,
     Xfs,
     Btrfs,
+    /// HFS+ or HFSX.
+    HfsPlus,
+    Jfs,
+    /// ReiserFS 3.5 / 3.6.
+    Reiser,
+    Apfs,
     Unknown,
 }
 
@@ -532,6 +538,11 @@ fn detect_at(src: &Source, offset: u64, boot: &[u8]) -> FsKind {
     }
     match src.read_vec(offset + 1024, 1024) {
         Ok(sb) if crate::ext4::is_ext(&sb) => return FsKind::Ext,
+        Ok(sb) if crate::hfsplus::is_hfsplus(&sb) => return FsKind::HfsPlus,
+        _ => {}
+    }
+    match src.read_vec(offset + 0x8000, 64) {
+        Ok(sb) if crate::jfs::is_jfs(&sb) => return FsKind::Jfs,
         _ => {}
     }
     match src.read_vec(offset + 0x10000, 0x48) {

@@ -62,7 +62,7 @@ struct Inode {
 /// One extent: file block offset, absolute byte offset, block count.
 type Ext = (u64, u64, u64);
 
-fn unix_time(secs: i64) -> Option<String> {
+pub(crate) fn unix_time(secs: i64) -> Option<String> {
     (946_684_800..4_102_444_800)
         .contains(&secs)
         .then(|| crate::jdr::format_time(secs * 1000)[..19].to_string())
