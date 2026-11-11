@@ -42,7 +42,7 @@ pub struct Ext4<'a> {
     inode_size: usize,
     journal_ino: u32,
     /// Per group: (block bitmap, inode bitmap, inode table, flags).
-    groups: Vec<(u64, u64, u64, u16)>,
+    groups: Vec<(u64, u64, u64, u16, u32)>,
 }
 
 #[derive(Clone)]
@@ -146,6 +146,7 @@ impl<'a> Ext4<'a> {
             vol.offset + (first_data_block + 1) * bs,
             ngroups as usize * desc,
         )?;
+        let has_csum = le32(&sb, 0x64) & 0x410 != 0;
         let mut groups = Vec::with_capacity(ngroups as usize);
         for g in gdt.chunks_exact(desc) {
             let hi = |o: usize| {
@@ -160,6 +161,13 @@ impl<'a> Ext4<'a> {
                 le32(g, 4) as u64 | hi(0x24),
                 le32(g, 8) as u64 | hi(0x28),
                 le16(g, 0x12),
+                // Inodes at the end of the table that were never used; only
+                // kept up to date with group descriptor checksums.
+                if has_csum {
+                    le16(g, 0x1C) as u32 | if desc >= 64 { (le16(g, 0x32) as u32) << 16 } else { 0 }
+                } else {
+                    0
+                },
             ));
         }
         Ok(Self {
@@ -359,7 +367,7 @@ impl<'a> Ext4<'a> {
     fn allocation(&self) -> Result<(Ranges, Vec<Vec<u8>>)> {
         let mut r = Ranges::new();
         let mut maps = Vec::with_capacity(self.groups.len());
-        for (g, &(bb, _, _, flags)) in self.groups.iter().enumerate() {
+        for (g, &(bb, _, _, flags, _)) in self.groups.iter().enumerate() {
             let first = self.first_data_block + g as u64 * self.blocks_per_group;
             let count = self.blocks_per_group.min(self.blocks - first);
             // BLOCK_UNINIT: the bitmap was never written; nothing but the
@@ -449,8 +457,23 @@ impl<'a> Ext4<'a> {
         };
         let tail = if v2 || v3 { 4 } else { 0 };
         let mut i = 1;
+        // The journal is read in runs of up to 4 MiB of adjacent blocks.
+        let mut chunk: (usize, Vec<u8>) = (0, vec![]);
+        let total = map.len() as u64 * self.bs;
         while i < map.len() {
-            let b = self.block(map[i])?;
+            let bsz = self.bs as usize;
+            if i < chunk.0 || (i - chunk.0 + 1) * bsz > chunk.1.len() {
+                let mut n = 1;
+                while n < 1024 && i + n < map.len() && map[i + n] == map[i] + n as u64 {
+                    n += 1;
+                }
+                if !self.valid_run(map[i], n as u64) {
+                    break;
+                }
+                chunk = (i, self.src.read_vec(self.vol + map[i] * self.bs, n * bsz)?);
+                crate::progress::fs(i as u64 * self.bs, total);
+            }
+            let b = &chunk.1[(i - chunk.0) * bsz..(i - chunk.0 + 1) * bsz];
             i += 1;
             // Descriptor block: lists the fs blocks whose copies follow.
             if be32(&b, 0) != JBD2_MAGIC || be32(&b, 4) != 1 {
@@ -486,6 +509,7 @@ impl<'a> Ext4<'a> {
                 }
             }
         }
+        crate::progress::fs(total, total);
         for v in j.copies.values_mut() {
             v.sort_unstable();
         }
@@ -728,40 +752,64 @@ impl<'a> Ext4<'a> {
                 )?;
             }
         }
-        // 2. Inodes marked deleted whose block list is still in place.
+        // 2. Inodes marked deleted whose block list is still in place. Only
+        //    the part of each table that was ever used is read.
+        let table_bytes = |gr: &(u64, u64, u64, u16, u32)| {
+            let used = self.inodes_per_group.saturating_sub(gr.4) as u64;
+            (used * self.inode_size as u64).div_ceil(self.bs) * self.bs
+        };
+        let total: u64 = self
+            .groups
+            .iter()
+            .filter(|gr| gr.3 & 1 == 0)
+            .map(table_bytes)
+            .sum();
+        let mut done = 0u64;
         for (g, gr) in self.groups.iter().enumerate() {
             if gr.3 & 1 != 0 {
                 continue; // INODE_UNINIT: table never used
             }
-            for k in 0..table_blocks {
-                if !self.valid_run(gr.2 + k, 1) {
+            let bytes = table_bytes(gr);
+            let mut off = 0u64;
+            while off < bytes {
+                let n = (bytes - off).min(1 << 20);
+                let first = gr.2 + off / self.bs;
+                crate::progress::fs(done + off, total);
+                if !self.valid_run(first, n / self.bs) {
                     break;
                 }
-                let b = self.block(gr.2 + k)?;
-                if b.iter().all(|&x| x == 0) {
-                    continue;
-                }
-                for n in 0..per_block {
-                    let ino_no = g as u32 * self.inodes_per_group + k as u32 * per_block + n + 1;
-                    if ino_no > self.inodes || found.contains_key(&ino_no) {
+                let chunk = self.src.read_vec(self.vol + first * self.bs, n as usize)?;
+                for (k, b) in chunk.chunks_exact(self.bs as usize).enumerate() {
+                    let k = off / self.bs + k as u64;
+                    if b.iter().all(|&x| x == 0) {
                         continue;
                     }
-                    let o = n as usize * self.inode_size;
-                    let Some(i) = b.get(o..o + self.inode_size).and_then(Inode::parse) else {
-                        continue;
-                    };
-                    if i.dtime == 0 && i.links > 0 {
-                        continue;
+                    for n in 0..per_block {
+                        let ino_no =
+                            g as u32 * self.inodes_per_group + k as u32 * per_block + n + 1;
+                        if ino_no > self.inodes || found.contains_key(&ino_no) {
+                            continue;
+                        }
+                        let o = n as usize * self.inode_size;
+                        let Some(i) = b.get(o..o + self.inode_size).and_then(Inode::parse) else {
+                            continue;
+                        };
+                        if i.dtime == 0 && i.links > 0 {
+                            continue;
+                        }
+                        consider(
+                            ino_no,
+                            &i,
+                            "ext inode still holds its block list",
+                            &mut found,
+                        )?;
                     }
-                    consider(
-                        ino_no,
-                        &i,
-                        "ext inode still holds its block list",
-                        &mut found,
-                    )?;
                 }
+                off += n;
             }
+            done += bytes;
         }
+        crate::progress::fs(total, total);
         let mut deleted: Vec<DeletedFile> = found.into_values().collect();
         deleted.sort_by(|a, b| a.path.cmp(&b.path));
         info.deleted = deleted;

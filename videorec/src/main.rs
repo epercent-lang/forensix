@@ -701,6 +701,7 @@ fn recover(
         ),
         None => None,
     };
+    progress::show_fs(!clip_extra.quiet);
     let mut live_copies: Vec<fs::DeletedFile> = vec![];
     let all_volumes = volumes(&src)?;
     if let Some(o) = &only

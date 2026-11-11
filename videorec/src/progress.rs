@@ -151,3 +151,35 @@ pub fn stopped() -> bool {
     }
     false
 }
+
+// ------------------------------------------------- file system analysis
+
+static FS_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FS: Mutex<Option<Progress>> = Mutex::new(None);
+
+/// Turns the progress line for file system analysis on (scans only).
+pub fn show_fs(on: bool) {
+    FS_ON.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Position of the file system analysis: `done` of `total` bytes of
+/// metadata read. Reaching `total` ends the line.
+pub fn fs(done: u64, total: u64) {
+    if !FS_ON.load(std::sync::atomic::Ordering::Relaxed) || total == 0 {
+        return;
+    }
+    let mut g = FS.lock().unwrap();
+    let p = g.get_or_insert_with(|| {
+        let p = Progress::new("fs", total, false);
+        p.print();
+        p
+    });
+    if done >= total {
+        if let Some(p) = g.take() {
+            p.finish();
+        }
+    } else if done > p.done {
+        let n = done - p.done;
+        p.add(n);
+    }
+}

@@ -607,7 +607,7 @@ function startPoll() { clearInterval(st.poll); st.poll = setInterval(poll, 1000)
 async function poll() {
   let j; try { j = await api('/api/status'); } catch { return; }
   const m = (j.progress || '').match(/\[(\w+)\]\s+([\d.]+)%\s+([\d.]+)\/([\d.]+) GB\s+elapsed (\S+)\s+remaining (\S+)/);
-  let label = {scan: '녹화기 형식 검사', read: '세션 다시 읽기', files: 'MP4/AVI 파일 찾기', video: '영상 찾기 (파일·프레임을 한 번에)', frames: 'H.264/H.265 프레임 찾기', jpeg: 'MJPEG 프레임 찾기', mpeg4: 'MPEG-4 프레임 찾기', dvr: 'DVR 프레임 찾기 (카메라·시각)'}[m?.[1]] || '';
+  let label = {fs: '파일 시스템 분석 (삭제 기록 찾기)', scan: '녹화기 형식 검사', read: '세션 다시 읽기', files: 'MP4/AVI 파일 찾기', video: '영상 찾기 (파일·프레임을 한 번에)', frames: 'H.264/H.265 프레임 찾기', jpeg: 'MJPEG 프레임 찾기', mpeg4: 'MPEG-4 프레임 찾기', dvr: 'DVR 프레임 찾기 (카메라·시각)'}[m?.[1]] || '';
   const plan = st.plan || [], k = m ? plan.indexOf(m[1]) : -1;
   if (k >= 0 && plan.length > 1) label = `${k + 1}/${plan.length}단계 ${label}`;
   $('jobTitle').textContent = j.running ? (j.kind == 'export' ? '내보내는 중' : '스캔 중') + (label ? ' · ' + label : '')
