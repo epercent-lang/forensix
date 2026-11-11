@@ -526,10 +526,15 @@ fn volumes(src: &Source) -> Result<Vec<Volume>> {
     let mut pos = 0u64;
     for (a, b) in used.into_iter().chain([(src.len(), src.len())]) {
         if a > pos && a - pos >= 1 << 20 {
+            let mut boot = [0u8; 512];
+            let kind = match src.read_exact_at(pos, &mut boot) {
+                Ok(()) if pos > 0 => io::detect_at(src, pos, &boot),
+                _ => FsKind::Unknown,
+            };
             v.push(Volume {
                 offset: pos,
                 length: a - pos,
-                kind: FsKind::Unknown,
+                kind,
             });
         }
         pos = pos.max(b);

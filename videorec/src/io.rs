@@ -528,7 +528,7 @@ pub fn detect_fs(boot: &[u8]) -> FsKind {
 
 /// File system at `offset`: boot-sector types first, then the ext super
 /// block (at byte 1024 of the volume).
-fn detect_at(src: &Source, offset: u64, boot: &[u8]) -> FsKind {
+pub fn detect_at(src: &Source, offset: u64, boot: &[u8]) -> FsKind {
     let k = detect_fs(boot);
     if k != FsKind::Unknown {
         return k;
@@ -608,7 +608,10 @@ pub fn find_volumes(src: &Source) -> Result<Vec<Volume>> {
             let ptype = e[4];
             let lba = u32::from_le_bytes(e[8..12].try_into().unwrap()) as u64;
             let count = u32::from_le_bytes(e[12..16].try_into().unwrap()) as u64;
-            if ptype == 0 || count == 0 || ptype == 0xEE {
+            // Some recorders leave the type of their data partition at 0;
+            // such an entry counts when its range fits the source.
+            let hidden = ptype == 0 && lba > 0 && (lba + count) * 512 <= src.len() + (1 << 20);
+            if (ptype == 0 && !hidden) || count == 0 || ptype == 0xEE {
                 continue;
             }
             let offset = lba * 512;
