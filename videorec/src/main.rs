@@ -274,6 +274,10 @@ enum Cmd {
         /// start: e.g. 0-100, or 3500- for the rest of the disk.
         #[arg(long)]
         range_gb: Option<String>,
+        /// Also copy out the video files that still exist in the file system
+        /// (useful for cards Windows cannot open), under their own names.
+        #[arg(long)]
+        copy_live: bool,
         /// Scan only these volumes (partitions), numbered from 1 in the
         /// order `info` lists them: e.g. 2 or 1,3. Default: all.
         #[arg(long)]
@@ -322,6 +326,7 @@ struct ClipExtra {
     no_mj2k: bool,
     range_gb: Option<String>,
     volume: Option<String>,
+    copy_live: bool,
 }
 
 fn clip_opts(
@@ -542,6 +547,36 @@ fn volumes(src: &Source) -> Result<Vec<Volume>> {
     Ok(v)
 }
 
+/// File names that are copied by `--copy-live`.
+fn is_video_name(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    [
+        ".mp4", ".avi", ".mov", ".m4v", ".mkv", ".ts", ".mpg", ".mpeg", ".3gp", ".264", ".265",
+        ".h264", ".h265", ".dav", ".asf", ".wmv",
+    ]
+    .iter()
+    .any(|e| p.ends_with(e))
+}
+
+/// Writes the given byte ranges of the source, in order, to `path`.
+fn copy_extents(src: &Source, extents: &[(u64, u64)], path: &Path) -> Result<()> {
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let mut buf = vec![0u8; 4 << 20];
+    for &(a, b) in extents {
+        let mut p = a;
+        while p < b {
+            let n = src.read_at(p, &mut buf[..((b - p) as usize).min(4 << 20)])?;
+            if n == 0 {
+                break;
+            }
+            f.write_all(&buf[..n])?;
+            p += n as u64;
+        }
+    }
+    f.flush()?;
+    Ok(())
+}
+
 pub(crate) fn copy_range(src: &Source, start: u64, end: u64, path: &Path) -> Result<()> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
     let mut p = start;
@@ -666,6 +701,7 @@ fn recover(
         ),
         None => None,
     };
+    let mut live_copies: Vec<fs::DeletedFile> = vec![];
     let all_volumes = volumes(&src)?;
     if let Some(o) = &only
         && let Some(bad) = o.iter().find(|&&n| n == 0 || n > all_volumes.len())
@@ -727,6 +763,9 @@ fn recover(
             for &(a, b) in &f.extents {
                 live_map.push((a, b, base, f.path.clone()));
                 base += b - a;
+            }
+            if clip_extra.copy_live && is_video_name(&f.path) && !f.extents.is_empty() {
+                live_copies.push(f.clone());
             }
         }
         for d in &fsi.deleted {
@@ -910,6 +949,62 @@ fn recover(
         summary.insert("jdr_clips_from_earlier_pass".into(), jdr_older.into());
         summary.insert("jdr_segments_discarded".into(), jdr_discarded.into());
         summary.insert("jdr_by_month".into(), serde_json::to_value(&jdr_stats)?);
+    }
+
+    if !live_copies.is_empty() {
+        let need: u64 = live_copies.iter().map(|f| f.size).sum();
+        if let Some(free) = io::free_space(out)
+            && free < need
+        {
+            anyhow::bail!(
+                "--copy-live needs {:.1} GB for {} files, but the output drive has {:.1} GB free",
+                need as f64 / 1e9,
+                live_copies.len(),
+                free as f64 / 1e9
+            );
+        }
+        for f in &live_copies {
+            let id = items.len() + 1;
+            let mut parts = f.path.rsplit('/');
+            let (name, dir) = (parts.next().unwrap_or("file"), parts.next().unwrap_or(""));
+            let flat = if dir.is_empty() {
+                sanitize(name)
+            } else {
+                sanitize(&format!("{dir}_{name}"))
+            };
+            let path = out.join(format!("live_{id:05}_{flat}"));
+            copy_extents(&src, &f.extents, &path)?;
+            let whole = Source::open(&path)?;
+            let sound = match container::check_mp4(&whole, 0, whole.len())? {
+                Some(c) => c.intact && c.end == whole.len(),
+                None => container::check_avi(&whole, 0, whole.len())?
+                    .is_some_and(|c| c.intact && c.end == whole.len()),
+            };
+            drop(whole);
+            items.push(Recovered {
+                id,
+                kind: "fs_live_file".into(),
+                output: path.file_name().unwrap().to_string_lossy().into(),
+                size: std::fs::metadata(&path)?.len(),
+                sha256: report::sha256_file(&path)?,
+                source_start: f.extents[0].0,
+                source_end: f.extents.last().unwrap().1,
+                pieces: Some(f.extents.len()),
+                name_hint: Some(f.path.clone()),
+                live_file: Some(f.path.clone()),
+                live_file_offset: Some(0),
+                modified: f.modified.clone(),
+                created: f.created.clone(),
+                status: if sound { "ok" } else { "partial" }.into(),
+                notes: if sound {
+                    "existing file copied from the file system; container structure verified".into()
+                } else {
+                    "existing file copied from the file system; structure not verified".into()
+                },
+                ..Default::default()
+            });
+        }
+        summary.insert("live_files_copied".into(), live_copies.len().into());
     }
 
     if let Some(r) = &clip_extra.range_gb {
@@ -1256,6 +1351,7 @@ fn main() -> Result<()> {
                 no_mpeg12: false,
                 no_mj2k: false,
                 range_gb: None,
+                copy_live: false,
                 volume: None,
             };
             let o = clip_opts(
@@ -1314,6 +1410,7 @@ fn main() -> Result<()> {
             no_mpeg12,
             no_mj2k,
             range_gb,
+            copy_live,
             volume,
         } => recover(
             &image,
@@ -1342,6 +1439,7 @@ fn main() -> Result<()> {
                 no_mpeg12,
                 no_mj2k,
                 range_gb,
+                copy_live,
                 volume,
             },
             max_gap_kib,

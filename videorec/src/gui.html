@@ -200,6 +200,7 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
         <fieldset>
           <legend>찾을 대상</legend>
           <label class="opt"><input type="checkbox" id="tFs" checked><span>삭제된 파일 (파일시스템 기록)</span></label>
+          <label class="opt"><input type="checkbox" id="tLive"><span>남아 있는 영상 파일도 꺼내기 (Windows에서 안 열리는 카드용, 파일 크기만큼 공간 필요)</span></label>
           <label class="opt"><input type="checkbox" id="tJdr" checked><span>녹화기 고유 형식 (G-NET .jdr, Dahua DVR)</span></label>
           <label class="opt"><input type="checkbox" id="tCont" checked><span>MP4 / AVI 파일 조각</span></label>
           <label class="opt"><input type="checkbox" id="tStr" checked><span>H.264 / H.265 프레임</span></label>
@@ -575,6 +576,7 @@ $('btnScan').onclick = async () => {
   const a = ['recover', img, '-o', out, '--scope', document.querySelector('input[name=scope]:checked').value,
     '--format', $('fmt').value, '--group', $('grp').value];
   if (!$('tFs').checked) a.push('--no-fs');
+  if ($('tLive').checked && $('tFs').checked) a.push('--copy-live');
   if (!$('tJdr').checked) a.push('--vendor', 'none');
   if (!$('tCont').checked) a.push('--no-containers');
   if (!$('tStr').checked && !$('tMjpeg').checked && !$('tMp4v').checked && !$('tMpg').checked) a.push('--no-streams');
@@ -643,6 +645,7 @@ const good = it => it.status == 'ok';
 const when = it => it.start_time || it.modified || it.created || '';
 const how = it => ({
   fs_deleted_file: '지워진 파일 (파일시스템 기록으로 되살림)',
+  fs_live_file: '남아 있는 파일 (파일시스템에서 그대로 복사)',
   carved_container: '지워진 파일 (빈 공간에서 찾은 온전한 파일)',
   carved_stream: '영상 조각 (프레임을 이어 붙임)',
   carved_mjpeg: '영상 조각 (JPEG 프레임을 이어 붙임)',
@@ -854,6 +857,8 @@ function koNote(n) {
     .replace('no audio found for this time', '이 시간대의 소리 없음')
     .replace(/^first (\d+) of (\d+) frames have no key frame before them, so their picture is damaged$/, '앞쪽 $1/$2 프레임은 키프레임이 없어 화면이 깨집니다')
     .replace(/^recorded before the current pass of this file began \(([^)]+)\) — left over from an earlier pass of the ring$/, '이 파일의 현재 바퀴($1)보다 먼저 녹화됨: 링의 이전 바퀴에서 남은 영상')
+    .replace('existing file copied from the file system', '파일시스템에 남아 있던 파일을 그대로 복사')
+    .replace('structure not verified', '파일 구조는 확인하지 못함')
     .replace('container structure verified', '파일 구조 검사 통과')
     .replace(/^older footage: found after newer recording in the same 2 MiB area of the disk, i\.e\. left over where the recorder has since written$/, '옛 영상: 디스크의 같은 2 MB 구역에서 더 최근 녹화 뒤에 남아 있던 조각 (녹화기가 새로 쓴 자리에 남은 이전 녹화)')
     .replace('creation time from the MP4 header (recorder clock)', '녹화 시각은 MP4 헤더의 생성 시각 (녹화기 시계 기준)')
