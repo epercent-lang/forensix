@@ -303,7 +303,7 @@ fn finish(mut found: Vec<Found>, stats: &mut Stats) -> (Vec<Chunk>, HashSet<u64>
                 t_ms: s * 1000 + ms,
                 hdr,
                 tail: TRAILER as u16,
-                dahua: true,
+                origin: crate::jdr::Origin::Dahua,
             });
         }
         k = j;

@@ -201,7 +201,7 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
           <legend>찾을 대상</legend>
           <label class="opt"><input type="checkbox" id="tFs" checked><span>삭제된 파일 (파일시스템 기록)</span></label>
           <label class="opt"><input type="checkbox" id="tLive"><span>남아 있는 영상 파일도 꺼내기 (Windows에서 안 열리는 카드용, 파일 크기만큼 공간 필요)</span></label>
-          <label class="opt"><input type="checkbox" id="tJdr" checked><span>녹화기 고유 형식 (G-NET .jdr, Dahua DVR)</span></label>
+          <label class="opt"><input type="checkbox" id="tJdr" checked><span>녹화기 고유 형식 (G-NET .jdr, Dahua DVR, 여러 채널이 섞인 블랙박스 MP4)</span></label>
           <label class="opt"><input type="checkbox" id="tCont" checked><span>MP4 / AVI 파일 조각</span></label>
           <label class="opt"><input type="checkbox" id="tStr" checked><span>H.264 / H.265 프레임</span></label>
           <label class="opt"><input type="checkbox" id="tMjpeg" checked><span>MJPEG / JPEG 2000 프레임</span></label>
@@ -607,7 +607,7 @@ function startPoll() { clearInterval(st.poll); st.poll = setInterval(poll, 1000)
 async function poll() {
   let j; try { j = await api('/api/status'); } catch { return; }
   const m = (j.progress || '').match(/\[(\w+)\]\s+([\d.]+)%\s+([\d.]+)\/([\d.]+) GB\s+elapsed (\S+)\s+remaining (\S+)/);
-  let label = {fs: '파일 시스템 분석 (삭제 기록 찾기)', scan: '녹화기 형식 검사', read: '세션 다시 읽기', files: 'MP4/AVI 파일 찾기', video: '영상 찾기 (파일·프레임을 한 번에)', frames: 'H.264/H.265 프레임 찾기', jpeg: 'MJPEG 프레임 찾기', mpeg4: 'MPEG-4 프레임 찾기', dvr: 'DVR 프레임 찾기 (카메라·시각)'}[m?.[1]] || '';
+  let label = {fs: '파일 시스템 분석 (삭제 기록 찾기)', scan: '녹화기 형식 검사', read: '세션 다시 읽기', files: 'MP4/AVI 파일 찾기', video: '영상 찾기 (파일·프레임을 한 번에)', frames: 'H.264/H.265 프레임 찾기', jpeg: 'MJPEG 프레임 찾기', mpeg4: 'MPEG-4 프레임 찾기', dvr: 'DVR 프레임 찾기 (카메라·시각)', mix: '여러 채널 블랙박스 프레임 찾기 (카메라·시각)'}[m?.[1]] || '';
   const plan = st.plan || [], k = m ? plan.indexOf(m[1]) : -1;
   if (k >= 0 && plan.length > 1) label = `${k + 1}/${plan.length}단계 ${label}`;
   $('jobTitle').textContent = j.running ? (j.kind == 'export' ? '내보내는 중' : '스캔 중') + (label ? ' · ' + label : '')
@@ -653,7 +653,8 @@ const how = it => ({
   carved_mpeg: '영상 조각 (MPEG-1/2)',
   carved_mj2k: '영상 조각 (JPEG 2000 프레임을 이어 붙임)',
   jdr_clip: '녹화기 형식 (.jdr)',
-  dvr_clip: 'DVR 녹화 프레임 (Dahua)'
+  dvr_clip: 'DVR 녹화 프레임 (Dahua)',
+  mix_clip: '여러 채널 MP4에서 카메라별로 나눈 영상'
 }[it.kind] || it.kind) + (it.kind == 'jdr_clip' ? (older(it) ? ', 링 녹화에서 덮어쓰이기 전 남은 옛 영상' : ', 지금 카드에 남아 있는 녹화')
   : it.kind == 'dvr_clip' ? (older(it) ? ', 새 녹화가 덮어쓴 자리 뒤에 남은 옛 영상' : ', 그 자리의 가장 최근 기록 (DVR 목록에 남아 있는지는 확인하지 못함)') : '');
 st.node = ''; st.origin = ''; st.shown = 300; st.thumbs = new Map(); st.camOff = new Set(); st.open = new Set();
@@ -816,7 +817,7 @@ async function pick(i) {
   $('dLen').textContent = i.duration_s != null ? dur(i.duration_s) : '—';
   $('dSize').textContent = gb(i.size) + ` (${i.size.toLocaleString()} B)`;
   $('dFrames').textContent = i.frames != null ? `${i.frames.toLocaleString()} (키프레임 ${i.keyframes ?? 0})` : '—';
-  $('dAudio').textContent = hasAudio(i) ? '있음' : i.kind == 'jdr_clip' ? '없음 (그 시간대 소리 조각이 없음)' : '—';
+  $('dAudio').textContent = hasAudio(i) ? '있음' : i.kind == 'jdr_clip' ? '없음 (그 시간대 소리 조각이 없음)' : i.kind == 'mix_clip' ? '없음 (이 녹화기의 소리 형식을 아직 확인하지 못함)' : '—';
   $('dHow').textContent = how(i);
   $('dOff').textContent = '0x' + i.source_start.toString(16) + ' – 0x' + i.source_end.toString(16);
   $('dIn').textContent = i.live_file ? `${i.live_file} (+0x${(i.live_file_offset || 0).toString(16)})` : i.name_hint || '—';
@@ -855,6 +856,7 @@ function koNote(n) {
     .replace('timestamps from recorder', '시각은 녹화기 기록')
     .replace(/^audio: (\d+) AD chunks, ([\d.]+) s of 16-bit PCM at (\d+) Hz$/, '소리: AD 청크 $1개, $2초 (16비트 PCM, $3Hz)')
     .replace('no audio found for this time', '이 시간대의 소리 없음')
+    .replace('sound not recovered (its coding in this recorder is not identified)', '소리는 복구하지 못함 (이 녹화기의 소리 형식을 아직 확인하지 못함)')
     .replace(/^first (\d+) of (\d+) frames have no key frame before them, so their picture is damaged$/, '앞쪽 $1/$2 프레임은 키프레임이 없어 화면이 깨집니다')
     .replace(/^recorded before the current pass of this file began \(([^)]+)\) — left over from an earlier pass of the ring$/, '이 파일의 현재 바퀴($1)보다 먼저 녹화됨: 링의 이전 바퀴에서 남은 영상')
     .replace('existing file copied from the file system', '파일시스템에 남아 있던 파일을 그대로 복사')

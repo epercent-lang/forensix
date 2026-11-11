@@ -49,8 +49,28 @@ pub struct Chunk {
     /// Header length before the payload, and trailer length after it.
     pub hdr: u16,
     pub tail: u16,
-    /// Dahua DHAV frame (see `dhav.rs`) instead of a G-NET `.jdr` chunk.
-    pub dahua: bool,
+    pub origin: Origin,
+}
+
+/// Where a chunk comes from: decides the output name and report kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// G-NET `.jdr` chunk.
+    Jdr,
+    /// Dahua DHAV frame (see `dhav.rs`).
+    Dahua,
+    /// Sample of a multi-channel dashcam MP4 (see `mixcam.rs`).
+    Mixed,
+}
+
+impl Origin {
+    fn stem(self) -> &'static str {
+        match self {
+            Origin::Jdr => "jdr",
+            Origin::Dahua => "dvr",
+            Origin::Mixed => "mix",
+        }
+    }
 }
 
 impl Chunk {
@@ -150,7 +170,7 @@ pub fn parse_header(b: &[u8], off: u64) -> Option<Chunk> {
             + ms as i64,
         hdr: HEADER as u16,
         tail: 0,
-        dahua: false,
+        origin: Origin::Jdr,
     };
     match kind {
         Kind::Key | Kind::Frame => {
@@ -652,7 +672,7 @@ fn write_one(
     std::fs::create_dir_all(out.join(&sub))?;
     let stem = format!(
         "{}_{id:05}_{cam}_{}",
-        if first.dahua { "dvr" } else { "jdr" },
+        first.origin.stem(),
         start.replace([':', '-'], "").replace(['T', '.'], "_")
     );
     let ext = match o.format {
@@ -753,7 +773,9 @@ fn write_one(
         W::Avi(w) => w.finish()?,
     }
     let size = std::fs::metadata(&path)?.len();
-    let sound = if pcm.is_empty() {
+    let sound = if first.origin == Origin::Mixed {
+        "sound not recovered (its coding in this recorder is not identified)".to_string()
+    } else if pcm.is_empty() {
         "no audio found for this time".to_string()
     } else {
         format!(
@@ -763,7 +785,7 @@ fn write_one(
     };
     Ok(Some(Recovered {
         id,
-        kind: if first.dahua { "dvr_clip" } else { "jdr_clip" }.into(),
+        kind: format!("{}_clip", first.origin.stem()),
         output: rel,
         sha256: report::sha256_file(&path)?,
         size,

@@ -19,6 +19,7 @@ mod hfsplus;
 mod io;
 mod jdr;
 mod jfs;
+mod mixcam;
 mod mj2k;
 mod mjpeg;
 mod mp4;
@@ -82,6 +83,9 @@ enum Vendor {
     Jdr,
     /// Always scan for Dahua DVR/NVR frames (DHAV).
     Dahua,
+    /// Always scan for multi-channel dashcam samples (channel marker after
+    /// each frame, see mixcam.rs).
+    Mixed,
     /// Generic carving only.
     None,
 }
@@ -703,6 +707,9 @@ fn recover(
     };
     progress::show_fs(!clip_extra.quiet);
     let mut live_copies: Vec<fs::DeletedFile> = vec![];
+    // Starts of live video files: looked at to recognise the dashcam layout
+    // of mixcam.rs.
+    let mut live_video_starts: Vec<u64> = vec![];
     let all_volumes = volumes(&src)?;
     if let Some(o) = &only
         && let Some(bad) = o.iter().find(|&&n| n == 0 || n > all_volumes.len())
@@ -764,6 +771,12 @@ fn recover(
             for &(a, b) in &f.extents {
                 live_map.push((a, b, base, f.path.clone()));
                 base += b - a;
+            }
+            if live_video_starts.len() < 16
+                && is_video_name(&f.path)
+                && let Some(&(a, _)) = f.extents.first()
+            {
+                live_video_starts.push(a);
             }
             if clip_extra.copy_live && is_video_name(&f.path) && !f.extents.is_empty() {
                 live_copies.push(f.clone());
@@ -1059,6 +1072,49 @@ fn recover(
         items.extend(got);
         cov.normalize();
         session_dvr = cov.iter().collect();
+        for (s, e) in cov.iter() {
+            covered.add(s, e);
+        }
+        covered.normalize();
+    }
+    // Multi-channel dashcam samples: camera after every frame, time in the
+    // text samples between them.
+    if vendor == Vendor::Mixed
+        || (vendor == Vendor::Auto && mixcam::detect(&src, &live_video_starts, &regions)?)
+    {
+        let gaps: Vec<(u64, u64)> = regions
+            .iter()
+            .flat_map(|&(a, b)| covered.clone().gaps(a, b))
+            .collect();
+        progress::stage(
+            "mix",
+            gaps.iter().map(|g| g.1 - g.0).sum(),
+            clip_extra.quiet,
+        );
+        let mut cov = Ranges::new();
+        let mut st = mixcam::Stats::default();
+        let chunks = mixcam::scan(
+            &src,
+            &gaps,
+            &mut cov,
+            clip_opts.keep_without_key,
+            &mut st,
+        )?;
+        progress::end_stage();
+        let mut by_month = jdr::Stats::new();
+        let (got, discarded) = jdr::write_clips(
+            &src,
+            &chunks,
+            out,
+            items.len() + 1,
+            &clip_opts,
+            &mut by_month,
+        )?;
+        summary.insert("mix_frames".into(), serde_json::to_value(&st)?);
+        summary.insert("mix_segments_discarded".into(), discarded.into());
+        summary.insert("mix_by_month".into(), serde_json::to_value(&by_month)?);
+        items.extend(got);
+        cov.normalize();
         for (s, e) in cov.iter() {
             covered.add(s, e);
         }
