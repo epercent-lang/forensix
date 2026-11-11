@@ -24,6 +24,7 @@ use crate::io::Source;
 use crate::mjpeg;
 use crate::mp4::VideoConfig;
 use crate::mpeg4v;
+use crate::mpeg12;
 use crate::progress;
 use crate::ranges::Ranges;
 use crate::report::{self, Recovered};
@@ -43,6 +44,7 @@ pub struct Want {
     pub h26x: bool,
     pub mjpeg: bool,
     pub mpeg4: bool,
+    pub mpeg12: bool,
 }
 
 pub struct Params<'a> {
@@ -64,6 +66,7 @@ pub struct Out {
     pub chains_without_params: usize,
     pub mjpeg_small: usize,
     pub mpeg4_small: usize,
+    pub mpeg12_small: usize,
     /// Carving has to be repeated (see the module comment).
     pub redo: bool,
 }
@@ -138,7 +141,7 @@ fn salvaged_item(
         created: c.created.clone(),
         status: "partial".into(),
         notes: format!(
-            "MP4 with intact index but data cut off or overwritten: kept the first {} of {} video frames with {} track(s), {} of them audio, and the recorded timing; index rewritten for the kept part ({})",
+            "MP4 with intact index but data cut off or overwritten: kept the first {} of {} video frames with {} track(s), {} of them audio, and the recorded timing (index rewritten for the kept part); {}",
             fix.video_kept, fix.video_total, fix.tracks, fix.audio_tracks, c.note
         ),
         ..Default::default()
@@ -187,10 +190,11 @@ pub fn pass(
         .then(|| Carver::new(src, p.opts, configs.clone(), p.hints, out, p.ids.clone()));
     let mut known_configs = configs.len();
     let mut seen = 0usize; // carver results already in `taken`
-    let mut lag = want.mjpeg || want.mpeg4;
+    let mut lag = want.mjpeg || want.mpeg4 || want.mpeg12;
     let mut jpegs: Vec<mjpeg::Jpeg> = vec![];
     let mut vops = mpeg4v::Scanner::default();
-    let (mut jpos, mut mpos) = (0u64, 0u64);
+    let mut mpg = mpeg12::Scanner::default();
+    let (mut jpos, mut mpos, mut gpos) = (0u64, 0u64, 0u64);
     let mut containers: Vec<Recovered> = vec![];
 
     progress::stage(
@@ -294,7 +298,10 @@ pub fn pass(
                     jpos = lag_jpeg(src, &taken, jpos, limit, false, &mut jpegs)?;
                 }
                 if want.mpeg4 {
-                    mpos = lag_mpeg4(src, &taken, mpos, limit, &mut vops)?;
+                    mpos = lag_codes(src, &taken, mpos, limit, &mut vops)?;
+                }
+                if want.mpeg12 {
+                    gpos = lag_codes(src, &taken, gpos, limit, &mut mpg)?;
                 }
             }
         }
@@ -314,7 +321,10 @@ pub fn pass(
             lag_jpeg(src, &taken, jpos, len, true, &mut jpegs)?;
         }
         if want.mpeg4 {
-            lag_mpeg4(src, &taken, mpos, len, &mut vops)?;
+            lag_codes(src, &taken, mpos, len, &mut vops)?;
+        }
+        if want.mpeg12 {
+            lag_codes(src, &taken, gpos, len, &mut mpg)?;
         }
     }
     let (max_gap, min_frames, fps) = (p.opts.max_gap, p.opts.min_frames, p.opts.fps);
@@ -330,12 +340,25 @@ pub fn pass(
         }
         r.normalize();
         vops.exclude(&r);
+        mpg.exclude(&r);
         o.items.extend(got);
     }
     if lag && want.mpeg4 {
         let (got, small) = vops.finish(src, out, p.ids.get(), max_gap, min_frames, fps)?;
         p.ids.set(p.ids.get() + got.len());
         o.mpeg4_small = small;
+        let mut r = Ranges::new();
+        for it in &got {
+            r.add(it.source_start, it.source_end);
+        }
+        r.normalize();
+        mpg.exclude(&r);
+        o.items.extend(got);
+    }
+    if lag && want.mpeg12 {
+        let (got, small) = mpg.finish(src, out, p.ids.get(), max_gap, min_frames, fps)?;
+        p.ids.set(p.ids.get() + got.len());
+        o.mpeg12_small = small;
         o.items.extend(got);
     }
     o.items.sort_by_key(|i| i.id);
@@ -399,13 +422,35 @@ fn lag_jpeg(
     Ok(pos.max(limit))
 }
 
-/// MPEG-4 Part 2 scan of what is free in `[pos, limit)`.
-fn lag_mpeg4(
+/// A scanner of start-code streams that keeps its state between windows.
+trait Codes {
+    fn window(&mut self, src: &Source, start: u64, stop: u64, end: u64) -> Result<()>;
+    fn end_region(&mut self, pos: u64);
+}
+impl Codes for mpeg4v::Scanner {
+    fn window(&mut self, src: &Source, start: u64, stop: u64, end: u64) -> Result<()> {
+        self.scan_window(src, start, stop, end)
+    }
+    fn end_region(&mut self, pos: u64) {
+        mpeg4v::Scanner::end_region(self, pos)
+    }
+}
+impl Codes for mpeg12::Scanner {
+    fn window(&mut self, src: &Source, start: u64, stop: u64, end: u64) -> Result<()> {
+        self.scan_window(src, start, stop, end)
+    }
+    fn end_region(&mut self, pos: u64) {
+        mpeg12::Scanner::end_region(self, pos)
+    }
+}
+
+/// MPEG-4 Part 2 or MPEG-1/2 scan of what is free in `[pos, limit)`.
+fn lag_codes(
     src: &Source,
     taken: &Taken,
     mut pos: u64,
     limit: u64,
-    sc: &mut mpeg4v::Scanner,
+    sc: &mut dyn Codes,
 ) -> Result<u64> {
     while pos < limit && !progress::stopped() {
         let a = taken.skip(pos);
@@ -417,7 +462,7 @@ fn lag_mpeg4(
         }
         let b = taken.next_start(a).min(src.len());
         let stop = b.min(limit);
-        sc.scan_window(src, a, stop, b)?;
+        sc.window(src, a, stop, b)?;
         pos = stop;
     }
     Ok(pos.max(limit))

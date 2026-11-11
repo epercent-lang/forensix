@@ -205,6 +205,7 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
           <label class="opt"><input type="checkbox" id="tStr" checked><span>H.264 / H.265 프레임</span></label>
           <label class="opt"><input type="checkbox" id="tMjpeg" checked><span>MJPEG 프레임</span></label>
           <label class="opt"><input type="checkbox" id="tMp4v" checked><span>MPEG-4 (XviD) 프레임</span></label>
+          <label class="opt"><input type="checkbox" id="tMpg" checked><span>MPEG-1 / MPEG-2 (옛 DVR, DVD 계열)</span></label>
           <label class="opt"><input type="checkbox" id="tNoKey" checked><span>키프레임 없는 조각도 보관 (화면이 깨질 수 있음)</span></label>
           <label class="opt"><input type="checkbox" id="tAudio" checked><span>소리 넣기 (.jdr)</span></label>
         </fieldset>
@@ -220,6 +221,7 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
         <span class="row"><button class="b sm" id="btnFast">H.264/H.265 프레임만 찾기</button></span>
         <span class="small">대상을 줄여도 읽는 횟수는 같고 계산만 조금 줄어듭니다. MP4/AVI 파일 조각 찾기도 꺼지므로, MP4로 녹화하는 블랙박스·카메라에서는 찾는 영상이 줄 수 있습니다.</span>
       </div>
+      <label id="volWrap" hidden style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">검사할 볼륨(파티션)</span><select id="volSel"></select></label>
       <div class="grid2">
         <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">검사 구간 시작 (GB)</span><input type="number" id="rgA" min="0" step="1" placeholder="0 (처음)"></label>
         <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">검사 구간 끝 (GB)</span><input type="number" id="rgB" min="0" step="1" placeholder="끝까지"></label>
@@ -495,6 +497,8 @@ $('btnInfo').onclick = async () => {
     st.info = j; localStorage.setItem('vr.img', p);
     $('hdrName').textContent = j.name + ' · ' + gb(j.size);
     $('iName').textContent = j.name; $('iSize').textContent = gb(j.size);
+    $('volWrap').style.display = j.volumes.length > 1 ? 'flex' : 'none'; $('volWrap').hidden = j.volumes.length <= 1;
+    $('volSel').innerHTML = '<option value="">전체 (볼륨 ' + j.volumes.length + '개)</option>' + j.volumes.map((v, i) => `<option value="${i + 1}">${i + 1}번: ${esc(v.fs)}, ${gb(v.length)}, 시작 ${gb(v.offset)}</option>`).join('');
     $('iFs').textContent = j.volumes.map(v => v.fs).join(', ') + (j.volumes.length > 1 ? ` (볼륨 ${j.volumes.length}개)` : '');
     const rec = j.recorder.map(r => r.system);
     $('iFmt').textContent = j.jdr_files ? 'G-NET .jdr 링 녹화' : rec.length ? rec.join(', ') : '일반 (카빙)';
@@ -547,20 +551,20 @@ function checkSpace() {
 function passes() {
   const p = [];
   if ($('tJdr').checked && (st.info?.recorder || []).some(r => r.system.startsWith('Dahua'))) p.push('dvr');
-  const carve = $('tStr').checked || $('tMjpeg').checked || $('tMp4v').checked;
+  const carve = $('tStr').checked || $('tMjpeg').checked || $('tMp4v').checked || $('tMpg').checked;
   if (carve) p.push('video'); else if ($('tCont').checked) p.push('files');
   return p;
 }
 function passText() {
   const n = passes().length, size = st.info?.size;
-  let t = n > 1 ? `원본을 ${n}번 읽습니다. DVR 프레임(카메라·시각) 검사에 한 번, 나머지 대상(MP4/AVI, H.264/H.265, MJPEG, MPEG-4)은 모두 합쳐 한 번입니다.`
+  let t = n > 1 ? `원본을 ${n}번 읽습니다. DVR 프레임(카메라·시각) 검사에 한 번, 나머지 대상(MP4/AVI, H.264/H.265, MJPEG, MPEG-4, MPEG-1/2)은 모두 합쳐 한 번입니다.`
     : `선택한 대상을 모두 원본 한 번 읽기로 함께 찾습니다.`;
   t += ` 디스크 뒤쪽에서 새 영상 설정 정보(avcC/hvcC)가 나오면 프레임 찾기를 한 번 더 합니다.`;
   if (size) t += ` 원본 ${gb(size)}를 한 번 읽는 시간은 스캔을 시작하면 첫 단계의 남은 시간으로 나옵니다.`;
   $('passText').textContent = t;
 }
-['tJdr', 'tCont', 'tStr', 'tMjpeg', 'tMp4v'].forEach(id => $(id).addEventListener('change', passText));
-$('btnFast').onclick = () => { $('tCont').checked = false; $('tMjpeg').checked = false; $('tMp4v').checked = false; $('tStr').checked = true; passText(); };
+['tJdr', 'tCont', 'tStr', 'tMjpeg', 'tMp4v', 'tMpg'].forEach(id => $(id).addEventListener('change', passText));
+$('btnFast').onclick = () => { $('tCont').checked = false; $('tMjpeg').checked = false; $('tMp4v').checked = false; $('tMpg').checked = false; $('tStr').checked = true; passText(); };
 const tval = id => $(id).value ? $(id).value.replace('T', ' ') : null;
 $('btnScan').onclick = async () => {
   const img = $('imgPath').value.trim(), out = $('outDir').value.trim();
@@ -573,14 +577,16 @@ $('btnScan').onclick = async () => {
   if (!$('tFs').checked) a.push('--no-fs');
   if (!$('tJdr').checked) a.push('--vendor', 'none');
   if (!$('tCont').checked) a.push('--no-containers');
-  if (!$('tStr').checked && !$('tMjpeg').checked && !$('tMp4v').checked) a.push('--no-streams');
+  if (!$('tStr').checked && !$('tMjpeg').checked && !$('tMp4v').checked && !$('tMpg').checked) a.push('--no-streams');
   else {
     if (!$('tStr').checked) a.push('--no-h26x');
     if (!$('tMjpeg').checked) a.push('--no-mjpeg');
     if (!$('tMp4v').checked) a.push('--no-mpeg4');
+    if (!$('tMpg').checked) a.push('--no-mpeg12');
   }
   const rA = $('rgA').value.trim(), rB = $('rgB').value.trim();
   if (rA || rB) a.push('--range-gb', `${rA || 0}-${rB}`);
+  if ($('volSel').value) a.push('--volume', $('volSel').value);
   st.plan = passes();
   if (!$('tNoKey').checked) a.push('--jdr-drop-without-key');
   if (!$('tAudio').checked) a.push('--no-audio');
@@ -641,6 +647,7 @@ const how = it => ({
   carved_stream: '영상 조각 (프레임을 이어 붙임)',
   carved_mjpeg: '영상 조각 (JPEG 프레임을 이어 붙임)',
   carved_mpeg4: '영상 조각 (MPEG-4 Part 2 프레임을 이어 붙임)',
+  carved_mpeg: '영상 조각 (MPEG-1/2)',
   jdr_clip: '녹화기 형식 (.jdr)',
   dvr_clip: 'DVR 녹화 프레임 (Dahua)'
 }[it.kind] || it.kind) + (it.kind == 'jdr_clip' ? (older(it) ? ', 링 녹화에서 덮어쓰이기 전 남은 옛 영상' : ', 지금 카드에 남아 있는 녹화')
@@ -775,7 +782,7 @@ async function pumpThumbs() {
 async function makeThumb(it) {
   try {
     const r = await fetch('/api/thumb?out=' + encodeURIComponent(st.out) + '&f=' + encodeURIComponent(it.output), {headers: {'X-Token': T}});
-    if (!r.ok) { const t = await r.text(); return {err: /key frame/.test(t) ? '키프레임이 없어 그림 없음' : it.codec == 'mpeg4' ? 'MPEG-4 Part 2: 기본 플레이어로 보세요' : '미리보기 없음'}; }
+    if (!r.ok) { const t = await r.text(); return {err: /key frame/.test(t) ? '키프레임이 없어 그림 없음' : it.codec == 'mpeg4' ? 'MPEG-4 Part 2: 기본 플레이어로 보세요' : /^mpeg/.test(it.codec || '') ? 'MPEG-1/2: 기본 플레이어로 보세요' : '미리보기 없음'}; }
     const blob = await r.blob(); const url = URL.createObjectURL(blob);
     if (blob.type.startsWith('image/')) return {img: url};
     const v = document.createElement('video'); v.muted = true; v.preload = 'auto'; v.src = url;
@@ -818,6 +825,7 @@ async function pick(i) {
   const usePreview = async () => {
     const r = await api('/api/preview?out=' + encodeURIComponent(st.out) + '&f=' + encodeURIComponent(i.output));
     if (st.cur != i) return;
+    if (r.error && /^mpeg(1|2|-ps)/.test(i.codec || '')) { pvMsg('MPEG-1/2 영상은 브라우저에서 재생되지 않습니다. "기본 플레이어로 열기"를 쓰세요.'); return; }
     if (r.error && i.codec == 'mpeg4') { pvMsg('MPEG-4 Part 2(XviD) 영상은 브라우저에서 재생되지 않습니다. "기본 플레이어로 열기"를 쓰세요.'); return; }
     if (r.error) { pvMsg(/key frame/.test(r.error) ? '키프레임이 없어 브라우저에서는 재생할 수 없습니다. "기본 플레이어로 열기"를 쓰세요.' : /Motion-JPEG/.test(r.error) ? 'MJPEG 영상은 "기본 플레이어로 열기"로 보세요.' : '미리보기를 만들지 못했습니다: ' + r.error); return; }
     pv.src = r.video; if (r.audio) pa.src = r.audio;
@@ -851,6 +859,12 @@ function koNote(n) {
     .replace(/^(\d+) of (\d+) frames before the first keyframe dropped$/, '첫 키프레임 앞의 $1/$2 프레임은 뺐습니다')
     .replace('video only (audio not carved)', '영상만 (소리는 찾지 않음)')
     .replace(/^MPEG-4 Part 2$/, 'MPEG-4 Part 2 (XviD/DivX 계열)')
+    .replace('MPEG-1/2 video elementary stream, bytes as found', 'MPEG-1/2 영상 스트림, 원본 바이트 그대로. 마지막 프레임은 끝을 정확히 알 수 없어 아래쪽이 깨질 수 있음')
+    .replace('frame rate from the sequence header', '프레임 속도는 스트림 헤더 값')
+    .replace(/^(\d+) of (\d+) video chunks do not start with a valid NAL unit \(overwritten or fragmented\)$/, '영상 청크 $2개 중 $1개가 덮어쓰였거나 조각남')
+    .replace('box chain runs past the readable area or mdat has size 0 (incomplete recording)', '파일이 읽을 수 있는 영역 밖으로 이어짐 (끝이 잘림)')
+    .replace(/^MPEG program stream: unbroken chain of (\d+) packs copied as found \(video and any audio inside it\)$/, 'MPEG 프로그램 스트림: 끊기지 않은 팩 $1개를 그대로 복사 (안의 영상·소리 포함)')
+    .replace(/^MP4 with intact index but data cut off or overwritten: kept the first (\d+) of (\d+) video frames with (\d+) track\(s\), (\d+) of them audio, and the recorded timing \(index rewritten for the kept part\)$/, '색인은 온전하고 뒤쪽 데이터가 잘리거나 덮어쓰인 MP4: 영상 $2프레임 중 앞의 $1프레임을 트랙 $3개(소리 $4개)와 원래 시간 정보 그대로 살림')
     .replace('MPEG-4 Part 2; frame rate not in the stream, 25 fps assumed (use --fps)', 'MPEG-4 Part 2, 프레임 속도가 스트림에 없어 25fps로 가정')
   ).join('\n');
 }

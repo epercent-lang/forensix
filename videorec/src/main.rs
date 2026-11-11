@@ -18,6 +18,7 @@ mod jdr;
 mod mjpeg;
 mod mp4;
 mod mp4fix;
+mod mpeg12;
 mod mpeg4v;
 mod multi;
 mod ntfs;
@@ -256,10 +257,17 @@ enum Cmd {
         /// Skip the MPEG-4 Part 2 pass (one more full read of the source).
         #[arg(long)]
         no_mpeg4: bool,
+        /// Skip the MPEG-1/2 search.
+        #[arg(long)]
+        no_mpeg12: bool,
         /// Carve only this part of the source, in GB (10^9 bytes) from the
         /// start: e.g. 0-100, or 3500- for the rest of the disk.
         #[arg(long)]
         range_gb: Option<String>,
+        /// Scan only these volumes (partitions), numbered from 1 in the
+        /// order `info` lists them: e.g. 2 or 1,3. Default: all.
+        #[arg(long)]
+        volume: Option<String>,
     },
 }
 
@@ -300,7 +308,9 @@ struct ClipExtra {
     no_h26x: bool,
     no_mjpeg: bool,
     no_mpeg4: bool,
+    no_mpeg12: bool,
     range_gb: Option<String>,
+    volume: Option<String>,
 }
 
 fn clip_opts(
@@ -593,7 +603,32 @@ fn recover(
     let mut jdr_vols: Vec<(u64, u64)> = vec![];
     let mut jdr_files: Vec<(u64, u64)> = vec![];
 
-    for v in volumes(&src)? {
+    let only: Option<Vec<usize>> = match &clip_extra.volume {
+        Some(s) => Some(
+            s.split(',')
+                .map(|x| x.trim().parse::<usize>())
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|_| anyhow::anyhow!("--volume takes numbers such as 2 or 1,3"))?,
+        ),
+        None => None,
+    };
+    let all_volumes = volumes(&src)?;
+    if let Some(o) = &only
+        && let Some(bad) = o.iter().find(|&&n| n == 0 || n > all_volumes.len())
+    {
+        anyhow::bail!(
+            "--volume {bad}: the source has {} volume(s)",
+            all_volumes.len()
+        );
+    }
+    for (vi, v) in all_volumes.into_iter().enumerate() {
+        if only.as_ref().is_some_and(|o| !o.contains(&(vi + 1))) {
+            vol_info.push(serde_json::json!({
+                "offset": v.offset, "length": v.length, "fs": format!("{:?}", v.kind),
+                "skipped": true,
+            }));
+            continue;
+        }
         let fsi = if no_fs {
             None
         } else {
@@ -870,18 +905,19 @@ fn recover(
         h26x: !no_streams && !clip_extra.no_h26x,
         mjpeg: !no_streams && !clip_extra.no_mjpeg,
         mpeg4: !no_streams && !clip_extra.no_mpeg4,
+        mpeg12: !no_streams && !clip_extra.no_mpeg12,
     };
     let mut damaged_containers = 0usize;
     let mut salvaged_containers = 0usize;
     let (mut discarded, mut chains_without_params) = (0, 0);
-    let (mut mjpeg_runs_small, mut mpeg4_runs_small) = (0, 0);
+    let (mut mjpeg_runs_small, mut mpeg4_runs_small, mut mpeg12_runs_small) = (0, 0, 0);
     let mut read_passes = 0;
     let read_before = src.bytes_read();
     let cache_mib = std::env::var("VIDEOREC_CACHE_MB")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(512);
-    while want.containers || want.h26x || want.mjpeg || want.mpeg4 {
+    while want.containers || want.h26x || want.mjpeg || want.mpeg4 || want.mpeg12 {
         src.set_block_cache(cache_mib);
         let claimed: Vec<(u64, u64)> = items
             .iter()
@@ -905,6 +941,7 @@ fn recover(
         chains_without_params += got.chains_without_params;
         mjpeg_runs_small += got.mjpeg_small;
         mpeg4_runs_small += got.mpeg4_small;
+        mpeg12_runs_small += got.mpeg12_small;
         items.extend(got.items);
         if !got.redo || progress::stopped() {
             break;
@@ -914,6 +951,10 @@ fn recover(
         want.containers = false;
     }
     summary.insert("read_passes".into(), read_passes.into());
+    summary.insert(
+        "mpeg12_runs_below_min_frames".into(),
+        mpeg12_runs_small.into(),
+    );
     summary.insert("containers_kept_in_part".into(), salvaged_containers.into());
     summary.insert(
         "carving_bytes_read".into(),
@@ -1122,7 +1163,9 @@ fn main() -> Result<()> {
                 no_h26x: false,
                 no_mjpeg: false,
                 no_mpeg4: false,
+                no_mpeg12: false,
                 range_gb: None,
+                volume: None,
             };
             let o = clip_opts(
                 &x,
@@ -1177,7 +1220,9 @@ fn main() -> Result<()> {
             no_h26x,
             no_mjpeg,
             no_mpeg4,
+            no_mpeg12,
             range_gb,
+            volume,
         } => recover(
             &image,
             &out,
@@ -1202,7 +1247,9 @@ fn main() -> Result<()> {
                 no_h26x,
                 no_mjpeg,
                 no_mpeg4,
+                no_mpeg12,
                 range_gb,
+                volume,
             },
             max_gap_kib,
             min_frames,
