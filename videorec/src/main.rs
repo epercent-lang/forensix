@@ -15,6 +15,7 @@ mod fs;
 mod gui;
 mod io;
 mod jdr;
+mod mj2k;
 mod mjpeg;
 mod mp4;
 mod mp4fix;
@@ -260,6 +261,9 @@ enum Cmd {
         /// Skip the MPEG-1/2 search.
         #[arg(long)]
         no_mpeg12: bool,
+        /// Skip the Motion JPEG 2000 search.
+        #[arg(long)]
+        no_mj2k: bool,
         /// Carve only this part of the source, in GB (10^9 bytes) from the
         /// start: e.g. 0-100, or 3500- for the rest of the disk.
         #[arg(long)]
@@ -309,6 +313,7 @@ struct ClipExtra {
     no_mjpeg: bool,
     no_mpeg4: bool,
     no_mpeg12: bool,
+    no_mj2k: bool,
     range_gb: Option<String>,
     volume: Option<String>,
 }
@@ -928,18 +933,20 @@ fn recover(
         mjpeg: !no_streams && !clip_extra.no_mjpeg,
         mpeg4: !no_streams && !clip_extra.no_mpeg4,
         mpeg12: !no_streams && !clip_extra.no_mpeg12,
+        mj2k: !no_streams && !clip_extra.no_mj2k,
     };
     let mut damaged_containers = 0usize;
     let mut salvaged_containers = 0usize;
     let (mut discarded, mut chains_without_params) = (0, 0);
     let (mut mjpeg_runs_small, mut mpeg4_runs_small, mut mpeg12_runs_small) = (0, 0, 0);
+    let mut mj2k_runs_small = 0;
     let mut read_passes = 0;
     let read_before = src.bytes_read();
     let cache_mib = std::env::var("VIDEOREC_CACHE_MB")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(512);
-    while want.containers || want.h26x || want.mjpeg || want.mpeg4 || want.mpeg12 {
+    while want.containers || want.h26x || want.mjpeg || want.mpeg4 || want.mpeg12 || want.mj2k {
         src.set_block_cache(cache_mib);
         let claimed: Vec<(u64, u64)> = items
             .iter()
@@ -964,6 +971,7 @@ fn recover(
         mjpeg_runs_small += got.mjpeg_small;
         mpeg4_runs_small += got.mpeg4_small;
         mpeg12_runs_small += got.mpeg12_small;
+        mj2k_runs_small += got.mj2k_small;
         items.extend(got.items);
         if !got.redo || progress::stopped() {
             break;
@@ -973,6 +981,7 @@ fn recover(
         want.containers = false;
     }
     summary.insert("read_passes".into(), read_passes.into());
+    summary.insert("mj2k_runs_below_min_frames".into(), mj2k_runs_small.into());
     summary.insert(
         "mpeg12_runs_below_min_frames".into(),
         mpeg12_runs_small.into(),
@@ -1186,6 +1195,7 @@ fn main() -> Result<()> {
                 no_mjpeg: false,
                 no_mpeg4: false,
                 no_mpeg12: false,
+                no_mj2k: false,
                 range_gb: None,
                 volume: None,
             };
@@ -1243,6 +1253,7 @@ fn main() -> Result<()> {
             no_mjpeg,
             no_mpeg4,
             no_mpeg12,
+            no_mj2k,
             range_gb,
             volume,
         } => recover(
@@ -1270,6 +1281,7 @@ fn main() -> Result<()> {
                 no_mjpeg,
                 no_mpeg4,
                 no_mpeg12,
+                no_mj2k,
                 range_gb,
                 volume,
             },

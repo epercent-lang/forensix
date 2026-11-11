@@ -203,7 +203,7 @@ dl.props dt{color:#4A5060}dl.props dd{margin:0}
           <label class="opt"><input type="checkbox" id="tJdr" checked><span>녹화기 고유 형식 (G-NET .jdr, Dahua DVR)</span></label>
           <label class="opt"><input type="checkbox" id="tCont" checked><span>MP4 / AVI 파일 조각</span></label>
           <label class="opt"><input type="checkbox" id="tStr" checked><span>H.264 / H.265 프레임</span></label>
-          <label class="opt"><input type="checkbox" id="tMjpeg" checked><span>MJPEG 프레임</span></label>
+          <label class="opt"><input type="checkbox" id="tMjpeg" checked><span>MJPEG / JPEG 2000 프레임</span></label>
           <label class="opt"><input type="checkbox" id="tMp4v" checked><span>MPEG-4 (XviD) 프레임</span></label>
           <label class="opt"><input type="checkbox" id="tMpg" checked><span>MPEG-1 / MPEG-2 (옛 DVR, DVD 계열)</span></label>
           <label class="opt"><input type="checkbox" id="tNoKey" checked><span>키프레임 없는 조각도 보관 (화면이 깨질 수 있음)</span></label>
@@ -580,7 +580,7 @@ $('btnScan').onclick = async () => {
   if (!$('tStr').checked && !$('tMjpeg').checked && !$('tMp4v').checked && !$('tMpg').checked) a.push('--no-streams');
   else {
     if (!$('tStr').checked) a.push('--no-h26x');
-    if (!$('tMjpeg').checked) a.push('--no-mjpeg');
+    if (!$('tMjpeg').checked) a.push('--no-mjpeg', '--no-mj2k');
     if (!$('tMp4v').checked) a.push('--no-mpeg4');
     if (!$('tMpg').checked) a.push('--no-mpeg12');
   }
@@ -648,6 +648,7 @@ const how = it => ({
   carved_mjpeg: '영상 조각 (JPEG 프레임을 이어 붙임)',
   carved_mpeg4: '영상 조각 (MPEG-4 Part 2 프레임을 이어 붙임)',
   carved_mpeg: '영상 조각 (MPEG-1/2)',
+  carved_mj2k: '영상 조각 (JPEG 2000 프레임을 이어 붙임)',
   jdr_clip: '녹화기 형식 (.jdr)',
   dvr_clip: 'DVR 녹화 프레임 (Dahua)'
 }[it.kind] || it.kind) + (it.kind == 'jdr_clip' ? (older(it) ? ', 링 녹화에서 덮어쓰이기 전 남은 옛 영상' : ', 지금 카드에 남아 있는 녹화')
@@ -782,7 +783,7 @@ async function pumpThumbs() {
 async function makeThumb(it) {
   try {
     const r = await fetch('/api/thumb?out=' + encodeURIComponent(st.out) + '&f=' + encodeURIComponent(it.output), {headers: {'X-Token': T}});
-    if (!r.ok) { const t = await r.text(); return {err: /key frame/.test(t) ? '키프레임이 없어 그림 없음' : it.codec == 'mpeg4' ? 'MPEG-4 Part 2: 기본 플레이어로 보세요' : /^mpeg/.test(it.codec || '') ? 'MPEG-1/2: 기본 플레이어로 보세요' : '미리보기 없음'}; }
+    if (!r.ok) { const t = await r.text(); return {err: /key frame/.test(t) ? '키프레임이 없어 그림 없음' : it.codec == 'mpeg4' ? 'MPEG-4 Part 2: 기본 플레이어로 보세요' : /^mpeg/.test(it.codec || '') ? 'MPEG-1/2: 기본 플레이어로 보세요' : it.codec == 'jpeg2000' ? 'JPEG 2000: 기본 플레이어로 보세요' : '미리보기 없음'}; }
     const blob = await r.blob(); const url = URL.createObjectURL(blob);
     if (blob.type.startsWith('image/')) return {img: url};
     const v = document.createElement('video'); v.muted = true; v.preload = 'auto'; v.src = url;
@@ -861,6 +862,7 @@ function koNote(n) {
     .replace(/^MPEG-4 Part 2$/, 'MPEG-4 Part 2 (XviD/DivX 계열)')
     .replace('MPEG-1/2 video elementary stream, bytes as found', 'MPEG-1/2 영상 스트림, 원본 바이트 그대로. 마지막 프레임은 끝을 정확히 알 수 없어 아래쪽이 깨질 수 있음')
     .replace('frame rate from the sequence header', '프레임 속도는 스트림 헤더 값')
+    .replace('every JPEG 2000 frame decodes on its own', '프레임마다 따로 풀리는 JPEG 2000')
     .replace(/^(\d+) of (\d+) video chunks do not start with a valid NAL unit \(overwritten or fragmented\)$/, '영상 청크 $2개 중 $1개가 덮어쓰였거나 조각남')
     .replace('box chain runs past the readable area or mdat has size 0 (incomplete recording)', '파일이 읽을 수 있는 영역 밖으로 이어짐 (끝이 잘림)')
     .replace(/^MPEG program stream: unbroken chain of (\d+) packs copied as found \(video and any audio inside it\)$/, 'MPEG 프로그램 스트림: 끊기지 않은 팩 $1개를 그대로 복사 (안의 영상·소리 포함)')

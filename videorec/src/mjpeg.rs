@@ -152,6 +152,37 @@ pub fn write_runs(
     min_frames: usize,
     fps: Option<f64>,
 ) -> Result<(Vec<Recovered>, usize)> {
+    write_runs_as(src, jpegs, out, first_id, max_gap, min_frames, fps, &MJPEG)
+}
+
+/// How a run of still images is written and reported.
+pub struct Flavour {
+    pub fourcc: [u8; 4],
+    pub prefix: &'static str,
+    pub kind: &'static str,
+    pub codec: &'static str,
+    pub what: &'static str,
+}
+
+const MJPEG: Flavour = Flavour {
+    fourcc: *b"MJPG",
+    prefix: "mjpeg",
+    kind: "carved_mjpeg",
+    codec: "mjpeg",
+    what: "every JPEG decodes on its own",
+};
+
+#[allow(clippy::too_many_arguments)]
+pub fn write_runs_as(
+    src: &Source,
+    jpegs: &[Jpeg],
+    out: &Path,
+    first_id: usize,
+    max_gap: u64,
+    min_frames: usize,
+    fps: Option<f64>,
+    fl: &Flavour,
+) -> Result<(Vec<Recovered>, usize)> {
     let mut items = vec![];
     let mut small = 0;
     let mut i = 0;
@@ -174,11 +205,11 @@ pub fn write_runs(
             Some(f) => ((f * 1000.0).round() as u32, 1000, false),
             None => (10, 1, true),
         };
-        let name = format!("mjpeg_{id:05}_{:012x}.avi", run[0].start);
+        let name = format!("{}_{id:05}_{:012x}.avi", fl.prefix, run[0].start);
         let path = out.join(&name);
         let mut w = AviWriter::create(
             &path,
-            *b"MJPG",
+            fl.fourcc,
             run[0].width as u32,
             run[0].height as u32,
             rate,
@@ -195,13 +226,13 @@ pub fn write_runs(
         let fr = rate as f64 / scale as f64;
         items.push(Recovered {
             id,
-            kind: "carved_mjpeg".into(),
+            kind: fl.kind.into(),
             output: name,
             sha256: report::sha256_file(&path)?,
             size: std::fs::metadata(&path)?.len(),
             source_start: run[0].start,
             source_end: run[run.len() - 1].end,
-            codec: Some("mjpeg".into()),
+            codec: Some(fl.codec.into()),
             width: Some(run[0].width as u32),
             height: Some(run[0].height as u32),
             frames: Some(run.len()),
@@ -210,10 +241,12 @@ pub fn write_runs(
             pieces: Some(pieces),
             status: "ok".into(),
             notes: if assumed {
-                "every JPEG decodes on its own; frame rate unknown, 10 fps assumed (use --fps)"
-                    .into()
+                format!(
+                    "{}; frame rate unknown, 10 fps assumed (use --fps)",
+                    fl.what
+                )
             } else {
-                "every JPEG decodes on its own".into()
+                fl.what.into()
             },
             ..Default::default()
         });

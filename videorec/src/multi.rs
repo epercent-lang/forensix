@@ -21,6 +21,7 @@
 
 use crate::container;
 use crate::io::Source;
+use crate::mj2k;
 use crate::mjpeg;
 use crate::mp4::VideoConfig;
 use crate::mpeg4v;
@@ -45,6 +46,7 @@ pub struct Want {
     pub mjpeg: bool,
     pub mpeg4: bool,
     pub mpeg12: bool,
+    pub mj2k: bool,
 }
 
 pub struct Params<'a> {
@@ -67,6 +69,7 @@ pub struct Out {
     pub mjpeg_small: usize,
     pub mpeg4_small: usize,
     pub mpeg12_small: usize,
+    pub mj2k_small: usize,
     /// Carving has to be repeated (see the module comment).
     pub redo: bool,
 }
@@ -190,8 +193,10 @@ pub fn pass(
         .then(|| Carver::new(src, p.opts, configs.clone(), p.hints, out, p.ids.clone()));
     let mut known_configs = configs.len();
     let mut seen = 0usize; // carver results already in `taken`
-    let mut lag = want.mjpeg || want.mpeg4 || want.mpeg12;
+    let mut lag = want.mjpeg || want.mpeg4 || want.mpeg12 || want.mj2k;
     let mut jpegs: Vec<mjpeg::Jpeg> = vec![];
+    let mut j2ks: Vec<mjpeg::Jpeg> = vec![];
+    let mut j2pos = 0u64;
     let mut vops = mpeg4v::Scanner::default();
     let mut mpg = mpeg12::Scanner::default();
     let (mut jpos, mut mpos, mut gpos) = (0u64, 0u64, 0u64);
@@ -295,7 +300,10 @@ pub fn pass(
                     limit = limit.min(cv.undecided_start().unwrap_or(u64::MAX));
                 }
                 if want.mjpeg {
-                    jpos = lag_jpeg(src, &taken, jpos, limit, false, &mut jpegs)?;
+                    jpos = lag_jpeg(src, &taken, jpos, limit, false, &mut jpegs, &JPEG)?;
+                }
+                if want.mj2k {
+                    j2pos = lag_jpeg(src, &taken, j2pos, limit, false, &mut j2ks, &J2K)?;
                 }
                 if want.mpeg4 {
                     mpos = lag_codes(src, &taken, mpos, limit, &mut vops)?;
@@ -318,7 +326,10 @@ pub fn pass(
     o.items.extend(containers);
     if lag && !progress::stopped() {
         if want.mjpeg {
-            lag_jpeg(src, &taken, jpos, len, true, &mut jpegs)?;
+            lag_jpeg(src, &taken, jpos, len, true, &mut jpegs, &JPEG)?;
+        }
+        if want.mj2k {
+            lag_jpeg(src, &taken, j2pos, len, true, &mut j2ks, &J2K)?;
         }
         if want.mpeg4 {
             lag_codes(src, &taken, mpos, len, &mut vops)?;
@@ -347,6 +358,19 @@ pub fn pass(
         let (got, small) = vops.finish(src, out, p.ids.get(), max_gap, min_frames, fps)?;
         p.ids.set(p.ids.get() + got.len());
         o.mpeg4_small = small;
+        let mut r = Ranges::new();
+        for it in &got {
+            r.add(it.source_start, it.source_end);
+        }
+        r.normalize();
+        mpg.exclude(&r);
+        o.items.extend(got);
+    }
+    if lag && want.mj2k {
+        let (got, small) =
+            mj2k::write_runs(src, &j2ks, out, p.ids.get(), max_gap, min_frames, fps)?;
+        p.ids.set(p.ids.get() + got.len());
+        o.mj2k_small = small;
         let mut r = Ranges::new();
         for it in &got {
             r.add(it.source_start, it.source_end);
@@ -391,7 +415,21 @@ impl Taken {
     }
 }
 
-/// Motion-JPEG scan of what is free in `[pos, limit)`. Unless `last`, images
+/// A scanner of self-contained still images and the largest image it takes.
+struct Still {
+    scan: fn(&Source, u64, u64, u64, &mut Vec<mjpeg::Jpeg>) -> Result<u64>,
+    max: u64,
+}
+const JPEG: Still = Still {
+    scan: mjpeg::scan_window,
+    max: mjpeg::MAX_JPEG as u64,
+};
+const J2K: Still = Still {
+    scan: mj2k::scan_window,
+    max: mj2k::MAX_FRAME as u64 + 1024,
+};
+
+/// Motion-JPEG (or JPEG 2000) scan of what is free in `[pos, limit)`. Unless `last`, images
 /// are only looked for where a whole one fits before `limit`, because what
 /// lies beyond is not decided yet. Returns the new position.
 fn lag_jpeg(
@@ -401,6 +439,7 @@ fn lag_jpeg(
     limit: u64,
     last: bool,
     found: &mut Vec<mjpeg::Jpeg>,
+    still: &Still,
 ) -> Result<u64> {
     while pos < limit && !progress::stopped() {
         let a = taken.skip(pos);
@@ -409,14 +448,14 @@ fn lag_jpeg(
         }
         let b = taken.next_start(a).min(src.len());
         if b <= limit || last {
-            mjpeg::scan_window(src, a, b, b, found)?;
+            (still.scan)(src, a, b, b, found)?;
             pos = b;
         } else {
-            let stop = limit.saturating_sub(mjpeg::MAX_JPEG as u64);
+            let stop = limit.saturating_sub(still.max);
             if stop <= a {
                 return Ok(a);
             }
-            return mjpeg::scan_window(src, a, stop, limit, found);
+            return (still.scan)(src, a, stop, limit, found);
         }
     }
     Ok(pos.max(limit))
