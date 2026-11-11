@@ -1,0 +1,935 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>videorec</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#F4F5F7;color:#16181D;font:14px/1.5 'Noto Sans KR','Malgun Gothic',system-ui,sans-serif}
+.mono{font-family:'JetBrains Mono',Consolas,monospace}
+header{display:flex;flex-wrap:wrap;align-items:center;gap:16px;padding:12px 24px;background:#16181D;color:#fff}
+header .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px}
+header .sub{font-weight:400;font-size:12px;color:#C9CDD6}
+nav{display:flex;flex-wrap:wrap;gap:4px;margin-left:24px}
+nav button{all:unset;cursor:pointer;padding:8px 14px;border-radius:6px;color:#C9CDD6}
+nav button.on{background:#2D3140;color:#fff;font-weight:500}
+nav button:focus-visible{outline:2px solid #fff}
+.ro{margin-left:auto;display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid #4A5063;border-radius:999px;font-size:12px}
+main{max-width:1440px;margin:0 auto;padding:32px;display:flex;flex-wrap:wrap;gap:24px}
+.col{flex:999 1 560px;min-width:0;display:flex;flex-direction:column;gap:16px}
+aside{flex:1 1 340px;display:flex;flex-direction:column;gap:16px}
+.card{background:#fff;border:1px solid #DDE1E8;border-radius:10px;padding:20px;display:flex;flex-direction:column;gap:12px}
+.note{border:1px dashed #C3C8D2;border-radius:10px;padding:16px;font-size:13px;color:#2A2E38}
+h1{margin:0;font-size:24px}h2{margin:0;font-size:16px}
+.muted{color:#4A5060}.small{font-size:12px}
+input[type=text],input[type=datetime-local],select{min-height:44px;padding:0 12px;border:1px solid #C3C8D2;border-radius:8px;font:inherit;background:#fff;min-width:0}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.row>input[type=text]{flex:1}
+button.b{min-height:44px;padding:0 16px;border:1px solid #C3C8D2;background:#fff;border-radius:8px;font:inherit;color:#16181D;cursor:pointer}
+button.p{min-height:48px;padding:0 24px;border:0;border-radius:8px;background:#1F4FB8;color:#fff;font:inherit;font-weight:700;cursor:pointer}
+button.p:disabled{background:#C3C8D2;color:#4A5060;cursor:not-allowed}
+button.b:focus-visible,button.p:focus-visible{outline:2px solid #1F4FB8;outline-offset:2px}
+label.opt{display:flex;gap:10px;align-items:flex-start;min-height:36px}
+label.opt input{margin-top:4px}
+.srcTab.on{background:#1F2328;color:#fff;border-color:#1F2328}
+.picklist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.picklist button{width:100%;text-align:left;display:flex;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid #D9DCE1;border-radius:8px;background:#fff;cursor:pointer}
+.picklist button:hover{border-color:#1F2328}
+.picklist button:disabled{opacity:.55;cursor:not-allowed}
+fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+legend{font-weight:500;margin-bottom:6px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+.kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px}
+.kv .k{font-size:12px;color:#4A5060}
+.alert{display:flex;gap:10px;background:#FCEFE5;color:#7A3407;border-radius:8px;padding:12px 14px}
+.err{background:#FDECEC;color:#8A1C1C;border-radius:8px;padding:12px 14px;white-space:pre-wrap}
+.bar{height:10px;background:#EEF0F4;border-radius:999px;overflow:hidden}
+.bar>div{height:100%;background:#1F4FB8;width:0}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;color:#4A5060;font-size:12px;font-weight:500;padding:10px 12px;border-bottom:1px solid #DDE1E8;position:sticky;top:0;background:#fff}
+td{padding:10px 12px;border-bottom:1px solid #EEF0F4}
+tr.sel{background:#EAF0FC}
+tbody tr{cursor:pointer}
+.tbl{max-height:560px;overflow:auto;border:1px solid #DDE1E8;border-radius:10px;background:#fff}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:2px 8px;border-radius:999px}
+.ok{background:#EAF0FC;color:#163C8C}.partial{background:#FCEFE5;color:#7A3407}
+.lane{display:flex;align-items:center;gap:8px}
+.lane .t{position:relative;flex:1;height:22px;background:#EEF0F4;border-radius:4px}
+.lane .t>div{position:absolute;top:0;bottom:0;min-width:2px;border-radius:2px}
+pre.log{margin:0;max-height:220px;overflow:auto;background:#16181D;color:#E6E8EE;border-radius:8px;padding:12px;font-size:12px;white-space:pre-wrap}
+.modal{position:fixed;inset:0;background:rgba(22,24,29,.45);display:flex;align-items:center;justify-content:center;padding:24px}
+.modal .card{width:min(720px,100%);max-height:80vh}
+.modal .card.ex{width:min(1000px,100%);height:min(640px,86vh);max-height:none;display:flex;flex-direction:column;gap:10px}
+.exbar{display:flex;gap:8px;align-items:center}
+.exbar input{flex:1;padding:7px 10px;border:1px solid #D9DCE1;border-radius:6px}
+.exbody{flex:1;min-height:0;display:grid;grid-template-columns:200px 1fr;border:1px solid #E3E6EB;border-radius:8px;overflow:hidden}
+.extree{border-right:1px solid #E3E6EB;overflow:auto;background:#FAFBFC}
+.modal .extree ul{list-style:none;margin:0;padding:0 0 8px;border:0;max-height:none;overflow:visible}
+.extree button{all:unset;box-sizing:border-box;display:block;width:100%;padding:6px 10px;cursor:pointer;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.extree button:hover{background:#EAF0FC}.extree button.on{background:#DCE6FA;font-weight:500}
+.exlist{overflow:auto}
+.exlist table{width:100%;border-collapse:collapse;font-size:13px}
+.exlist th{position:sticky;top:0;background:#fff;text-align:left;font-weight:500;color:#5B616E;padding:7px 10px;border-bottom:1px solid #E3E6EB}
+.exlist td{padding:6px 10px;white-space:nowrap;cursor:default;user-select:none}
+.exlist td:first-child{max-width:420px;overflow:hidden;text-overflow:ellipsis}
+.exlist tr:hover td{background:#F2F6FD}.exlist tr.on td{background:#DCE6FA}
+.exlist tr.dim td{color:#9AA0AA}
+.exfoot{display:flex;gap:8px;align-items:center}
+.modal ul{list-style:none;margin:0;padding:0;overflow:auto;max-height:50vh;border:1px solid #EEF0F4;border-radius:8px}
+.modal li button{all:unset;display:flex;justify-content:space-between;width:100%;box-sizing:border-box;padding:10px 12px;cursor:pointer}
+.modal li button:hover,.modal li button:focus-visible{background:#EAF0FC}
+.res{display:grid;grid-template-columns:280px minmax(0,1fr) 360px;height:calc(100vh - 62px)}
+.res-left,.res-right{background:#fff;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.res-left{border-right:1px solid #DDE1E8}.res-right{border-left:1px solid #DDE1E8}
+.res-mid{overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+button.b.sm{min-height:36px;padding:0 10px;font-size:13px}
+.seg{display:flex;border:1px solid #C3C8D2;border-radius:8px;overflow:hidden}
+.seg button{all:unset;flex:1;text-align:center;padding:8px 4px;cursor:pointer;font-size:13px}
+.seg button.on{background:#16181D;color:#fff}
+.seg button span{font-size:11px;opacity:.75}
+.tree{display:flex;flex-direction:column;font-size:14px;border-top:1px solid #EEF0F4;padding-top:8px}
+.tree button{all:unset;display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;cursor:pointer}
+.tree button:hover{background:#F4F5F7}.tree button.on{background:#EAF0FC;color:#163C8C;font-weight:500}
+.tree button:focus-visible{outline:2px solid #1F4FB8}
+.tree .n{margin-left:auto;font-size:12px;color:#4A5060}
+.tree .tw{width:14px;text-align:center;color:#4A5060}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:12px}
+.tile{background:#fff;border:1px solid #DDE1E8;border-radius:8px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column}
+.tile.on{outline:2px solid #1F4FB8;border-color:#1F4FB8}
+.tile .th{position:relative;aspect-ratio:16/9;background:#2A2E38;display:flex;align-items:center;justify-content:center;color:#C9CDD6;font-size:11px;text-align:center}
+.tile .th img{width:100%;height:100%;object-fit:cover;display:block}
+.tile .bd{position:absolute;top:6px;left:6px;display:flex;gap:4px}
+.tile .ck{position:absolute;top:6px;right:6px;width:18px;height:18px}
+.tile .du{position:absolute;bottom:6px;right:6px;background:rgba(22,24,29,.75);color:#fff;font-size:11px;padding:1px 5px;border-radius:4px}
+.tile .cap{padding:6px 8px;font-size:12px;line-height:1.35}
+.tile .cap .f{color:#4A5060;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bdg{font-size:11px;padding:1px 6px;border-radius:999px;font-weight:500}
+.bdg.del{background:#FDECEC;color:#8A1C1C}.bdg.live{background:#EAF0FC;color:#163C8C}.bdg.bad{background:#FCEFE5;color:#7A3407}.bdg.good{background:#E8F5EC;color:#1D5B33}
+.res-bar{position:sticky;bottom:-16px;background:#F4F5F7;padding:12px 0;display:flex;gap:8px;align-items:center;border-top:1px solid #DDE1E8;margin-top:auto}
+.player{position:relative;background:#000;border-radius:8px;overflow:hidden;aspect-ratio:16/9}
+.player video{width:100%;height:100%;display:block}
+.pvmsg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;color:#E6E8EE;font-size:13px;padding:16px;background:#16181D}
+dl.props{display:grid;grid-template-columns:96px minmax(0,1fr);gap:6px 10px;margin:0;font-size:13px}
+dl.props dt{color:#4A5060}dl.props dd{margin:0}
+@media (max-width:1100px){.res{grid-template-columns:240px minmax(0,1fr);height:auto}.res-right{grid-column:1/-1}}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z"/></svg>
+    videorec <span class="sub mono" id="hdrName"></span>
+  </div>
+  <nav aria-label="단계">
+    <button data-step="1" class="on">1 원본 선택</button>
+    <button data-step="2">2 스캔</button>
+    <button data-step="3">3 결과</button>
+    <button data-step="4">4 내보내기</button>
+  </nav>
+  <div class="ro">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+    원본은 읽기 전용으로만 엽니다
+  </div>
+</header>
+
+<!-- 1 원본 선택 -->
+<main id="s1">
+  <section class="col">
+    <div>
+      <h1>복구할 원본을 고르세요</h1>
+      <p class="muted" style="margin:6px 0 0">연결한 물리 디스크나 디스크 이미지(.raw, .img, .dd)를 고르면 파일시스템과 녹화 형식을 확인합니다.</p>
+    </div>
+    <div class="card">
+      <div class="row" role="tablist">
+        <button class="b srcTab" data-src="disk" role="tab">💽 물리 디스크</button>
+        <button class="b srcTab" data-src="file" role="tab">📄 이미지 파일</button>
+      </div>
+      <div id="srcDisk" hidden>
+        <div class="row"><span class="small muted" style="flex:1">번호는 Windows 디스크 관리의 "디스크 N"과 같습니다. 읽기만 하고 디스크에는 쓰지 않습니다.</span><button class="b sm" id="btnDisks">새로 고침</button></div>
+        <ul id="diskList" class="picklist"></ul>
+      </div>
+      <div id="srcFile">
+      <label for="imgPath" style="font-weight:500">원본 경로</label>
+      <div class="row">
+        <input type="text" id="imgPath" class="mono" placeholder="예: E:\Claude\6456.raw">
+        <button class="b" data-browse="imgPath" data-files="1">찾아보기</button>
+        <button class="p" id="btnInfo">확인</button>
+      </div>
+      </div>
+      <div id="infoErr" class="err" hidden></div>
+    </div>
+    <div class="card">
+      <label for="sesPath" style="font-weight:500">저장한 세션 열기 (다시 스캔하지 않고 내보내기)</label>
+      <div class="row">
+        <input type="text" id="sesPath" class="mono" placeholder="session.json">
+        <button class="b" data-browse="sesPath" data-files="1">찾아보기</button>
+        <button class="b" id="btnSes">내보내기로</button>
+      </div>
+    </div>
+  </section>
+  <aside>
+    <div class="card" id="infoCard" hidden>
+      <h2>선택한 원본</h2>
+      <div class="kv">
+        <div><div class="k">이름</div><div id="iName" style="font-weight:500"></div></div>
+        <div><div class="k">용량</div><div id="iSize" class="mono"></div></div>
+        <div><div class="k">파일시스템</div><div id="iFs"></div></div>
+        <div><div class="k">녹화 형식</div><div id="iFmt"></div></div>
+      </div>
+      <div id="iDetail" style="background:#F4F5F7;border-radius:8px;padding:12px 14px;font-size:13px;white-space:pre-line"></div>
+      <button class="p" data-go="2">스캔 설정으로</button>
+    </div>
+    <div class="note">결과는 원본과 다른 디스크에 저장하는 것이 안전합니다. 원본 장치가 있는 디스크에 쓰면 아직 남아 있는 영상이 덮어써질 수 있습니다.</div>
+  </aside>
+</main>
+
+<!-- 2 스캔 -->
+<main id="s2" hidden>
+  <section class="col">
+    <div class="card">
+      <h1 style="font-size:22px">스캔 설정</h1>
+      <div class="grid2">
+        <fieldset>
+          <legend>검사 범위</legend>
+          <label class="opt"><input type="radio" name="scope" value="auto" checked><span>자동<br><span class="small muted">녹화 형식이 확인되면 사용 중인 영역까지 검사합니다</span></span></label>
+          <label class="opt"><input type="radio" name="scope" value="free"><span>빈 공간만<br><span class="small muted">빠르지만 미리 할당된 파일 안의 옛 영상은 놓칩니다</span></span></label>
+          <label class="opt"><input type="radio" name="scope" value="all"><span>전체<br><span class="small muted">원본 전체를 프레임 단위로 검사합니다</span></span></label>
+        </fieldset>
+        <fieldset>
+          <legend>찾을 대상</legend>
+          <label class="opt"><input type="checkbox" id="tFs" checked><span>삭제된 파일 (파일시스템 기록)</span></label>
+          <label class="opt"><input type="checkbox" id="tLive"><span>남아 있는 영상 파일도 꺼내기 (Windows에서 안 열리는 카드용, 파일 크기만큼 공간 필요)</span></label>
+          <label class="opt"><input type="checkbox" id="tJdr" checked><span>녹화기 고유 형식 (G-NET .jdr, Dahua DVR, 여러 채널이 섞인 블랙박스 MP4)</span></label>
+          <label class="opt"><input type="checkbox" id="tCont" checked><span>MP4 / AVI 파일 조각</span></label>
+          <label class="opt"><input type="checkbox" id="tStr" checked><span>H.264 / H.265 프레임</span></label>
+          <label class="opt"><input type="checkbox" id="tMjpeg" checked><span>MJPEG / JPEG 2000 프레임</span></label>
+          <label class="opt"><input type="checkbox" id="tMp4v" checked><span>MPEG-4 (XviD) 프레임</span></label>
+          <label class="opt"><input type="checkbox" id="tMpg" checked><span>MPEG-1 / MPEG-2 (옛 DVR, DVD 계열)</span></label>
+          <label class="opt"><input type="checkbox" id="tNoKey" checked><span>키프레임 없는 조각도 보관 (화면이 깨질 수 있음)</span></label>
+          <label class="opt"><input type="checkbox" id="tAudio" checked><span>소리 넣기 (.jdr)</span></label>
+        </fieldset>
+      </div>
+      <div class="grid2">
+        <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">시작 시각</span><input type="datetime-local" id="from" step="1"></label>
+        <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">끝 시각</span><input type="datetime-local" id="to" step="1"></label>
+        <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">카메라</span><input type="text" id="cams" placeholder="전체 (예: 1,3 또는 1-2)"></label>
+      </div>
+      <p class="small muted" style="margin:0">시각과 카메라는 녹화기가 기록한 값으로 거릅니다. G-NET .jdr과 Dahua DVR에서 쓸 수 있습니다.</p>
+      <div class="note" id="passNote" style="display:flex;flex-direction:column;gap:8px">
+        <span><b>검사 시간:</b> <span id="passText"></span></span>
+        <span class="row"><button class="b sm" id="btnFast">H.264/H.265 프레임만 찾기</button></span>
+        <span class="small">대상을 줄여도 읽는 횟수는 같고 계산만 조금 줄어듭니다. MP4/AVI 파일 조각 찾기도 꺼지므로, MP4로 녹화하는 블랙박스·카메라에서는 찾는 영상이 줄 수 있습니다.</span>
+      </div>
+      <label id="volWrap" hidden style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">검사할 볼륨(파티션)</span><select id="volSel"></select></label>
+      <div class="grid2">
+        <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">검사 구간 시작 (GB)</span><input type="number" id="rgA" min="0" step="1" placeholder="0 (처음)"></label>
+        <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">검사 구간 끝 (GB)</span><input type="number" id="rgB" min="0" step="1" placeholder="끝까지"></label>
+      </div>
+      <p class="small muted" style="margin:0">큰 디스크는 먼저 앞부분(예: 0~50 GB)만 검사해 결과를 확인한 뒤 전체를 검사할 수 있습니다. 프레임 카빙에만 적용됩니다.</p>
+      <div class="grid2">
+        <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">파일 형식</span>
+          <select id="fmt"><option value="avi">AVI (대부분의 플레이어에서 소리까지 재생)</option><option value="mp4">MP4</option></select></label>
+        <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">폴더 정리</span>
+          <select id="grp"><option value="camera-date">카메라 › 날짜</option><option value="camera">카메라별</option><option value="date">날짜별</option><option value="none">한 폴더에 모두</option></select></label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">저장 위치</span>
+        <span class="row"><input type="text" id="outDir" class="mono"><button class="b" data-browse="outDir">찾아보기</button></span></label>
+      <div id="outSpace" class="small muted"></div>
+      <div id="sameDisk" class="alert" hidden>원본 이미지와 같은 디스크입니다. 이미지 파일이라 원본 장치에는 영향이 없지만, 공간이 충분한지 확인하세요.</div>
+      <label class="opt"><input type="checkbox" id="saveSes" checked><span>스캔 세션 저장 (다음에 다시 스캔 없이 내보내기)</span></label>
+      <div class="row">
+        <button class="p" id="btnScan">스캔 시작</button>
+        <button class="b" id="btnStop" hidden>멈추기 (찾은 것까지 저장)</button>
+      </div>
+      <div id="scanErr" class="err" hidden></div>
+    </div>
+  </section>
+  <aside>
+    <div class="card">
+      <h2 id="jobTitle">대기 중</h2>
+      <div class="bar"><div id="jobBar"></div></div>
+      <div id="jobTiming" class="small muted mono"></div>
+      <div id="jobErr" class="err" hidden></div>
+      <pre class="log" id="jobLog"></pre>
+      <button class="p" id="btnResults" data-go="3" hidden>결과 보기</button>
+    </div>
+  </aside>
+</main>
+
+<!-- 3 결과 -->
+<div id="s3" class="res" hidden>
+  <aside class="res-left">
+    <div class="row" style="gap:6px">
+      <input type="text" id="resOut" class="mono" style="flex:1;min-height:36px" aria-label="결과 폴더">
+      <button class="b sm" data-browse="resOut">찾기</button>
+      <button class="b sm" id="btnLoad">열기</button>
+    </div>
+    <div id="resErr" class="err" hidden></div>
+    <div role="tablist" class="seg" id="originSeg">
+      <button data-o="" class="on">전체 <span></span></button>
+      <button data-o="live">남아 있음 <span></span></button>
+      <button data-o="deleted">삭제됨 <span></span></button>
+    </div>
+    <div class="row small" style="gap:12px">
+      <label><input type="checkbox" id="fOk" checked> 온전 <span id="cOk" class="muted"></span></label>
+      <label><input type="checkbox" id="fBad" checked> 손상 <span id="cBad" class="muted"></span></label>
+    </div>
+    <div class="row small" id="camBox" style="gap:12px"></div>
+    <div class="tree" id="tree3" role="tree" aria-label="날짜별"></div>
+    <p class="small muted" style="margin:0">"삭제됨"에는 지워진 파일, 빈 공간에서 찾은 영상, 링 녹화에서 아직 덮어쓰이지 않은 옛 영상이 들어갑니다.</p>
+  </aside>
+  <section class="res-mid">
+    <div class="row" style="gap:8px">
+      <input type="text" id="fQ" placeholder="파일 이름 검색" style="flex:1;min-height:36px">
+      <select id="fSort" style="min-height:36px"><option value="new">최신순</option><option value="old">오래된순</option><option value="name">이름순</option></select>
+      <button class="b sm" id="btnAll">보이는 것 모두 선택</button>
+      <button class="b sm" id="btnNone">선택 해제</button>
+    </div>
+    <div id="resSum" class="small muted"></div>
+    <div class="grid" id="grid"></div>
+    <div style="text-align:center"><button class="b" id="btnMore" hidden>더 보기</button></div>
+    <div class="res-bar">
+      <span id="selCount" class="muted">선택 0개</span>
+      <button class="p" id="btnSaveSel" style="margin-left:auto">선택한 파일 저장</button>
+      <button class="b" id="btnSaveVis">보이는 파일 모두 저장</button>
+    </div>
+  </section>
+  <aside class="res-right">
+    <div id="detailEmpty" class="muted small" style="padding:24px 4px">영상을 고르면 여기서 미리 보고 자세한 정보를 볼 수 있습니다.</div>
+    <div id="detail" hidden style="display:flex;flex-direction:column;gap:10px">
+      <div class="player">
+        <video id="pv" controls playsinline></video>
+        <audio id="pa" preload="auto"></audio>
+        <div id="pvMsg" class="pvmsg" hidden></div>
+      </div>
+      <div id="pvNote" class="small muted"></div>
+      <h2 id="dFile" class="mono" style="word-break:break-all;font-size:13px"></h2>
+      <div class="row" style="gap:6px" id="dBadges"></div>
+      <dl class="props">
+        <dt>녹화 시각</dt><dd id="dTime"></dd>
+        <dt>카메라</dt><dd id="dCam"></dd>
+        <dt>길이</dt><dd id="dLen"></dd>
+        <dt>크기</dt><dd id="dSize"></dd>
+        <dt>프레임</dt><dd id="dFrames"></dd>
+        <dt>소리 트랙</dt><dd id="dAudio"></dd>
+        <dt>찾은 방법</dt><dd id="dHow"></dd>
+        <dt>원본 위치</dt><dd id="dOff" class="mono small"></dd>
+        <dt>들어 있던 파일</dt><dd id="dIn" class="small"></dd>
+        <dt>SHA-256</dt><dd id="dSha" class="mono small" style="word-break:break-all"></dd>
+      </dl>
+      <div id="dNote" style="background:#F4F5F7;border-radius:8px;padding:10px 12px;font-size:13px;white-space:pre-line"></div>
+      <div class="row">
+        <button class="b" id="btnPlay">기본 플레이어로 열기</button>
+        <button class="b" id="btnReveal">폴더에서 보기</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- 4 내보내기 -->
+<main id="s4" hidden style="max-width:1200px">
+  <section class="col">
+    <div class="card">
+      <h1 style="font-size:22px">내보내기</h1>
+      <fieldset>
+        <legend>방법</legend>
+        <label class="opt"><input type="radio" name="how" value="copy" checked><span>결과 폴더에서 복사<br><span class="small muted" id="copyNote"></span></span></label>
+        <label class="opt"><input type="radio" name="how" value="session"><span>저장한 세션에서 다시 만들기 (원본 이미지 필요, 시각·카메라·형식 설정 적용)</span></label>
+      </fieldset>
+      <fieldset id="whatSet">
+        <legend>대상</legend>
+        <label class="opt"><input type="radio" name="what" value="sel" checked><span id="wSel">선택한 영상</span></label>
+        <label class="opt"><input type="radio" name="what" value="vis"><span id="wVis">지금 보이는 목록 전체 (거르기 적용)</span></label>
+        <label class="opt"><input type="radio" name="what" value="all"><span id="wAll">찾은 영상 전부</span></label>
+      </fieldset>
+      <label style="display:flex;flex-direction:column;gap:6px" id="sesRow" hidden><span style="font-weight:500">세션 파일</span>
+        <span class="row"><input type="text" id="expSes" class="mono"><button class="b" data-browse="expSes" data-files="1">찾아보기</button></span></label>
+      <label style="display:flex;flex-direction:column;gap:6px"><span style="font-weight:500">저장 위치</span>
+        <span class="row"><input type="text" id="dest" class="mono"><button class="b" data-browse="dest">찾아보기</button></span></label>
+      <div id="destWarn" class="alert" hidden>원본 이미지와 같은 디스크입니다. 공간이 충분한지 확인하세요.</div>
+      <div class="row"><button class="b" data-go="3">돌아가기</button><button class="p" id="btnExport" style="margin-left:auto">저장</button></div>
+      <div id="expMsg" hidden></div>
+    </div>
+  </section>
+  <aside>
+    <div class="card"><h2>미리 보는 결과</h2><pre class="mono small" id="tree" style="margin:0;white-space:pre-wrap;word-break:break-all"></pre></div>
+    <div class="note">프레임과 소리 바이트는 바꾸지 않고 컨테이너만 새로 만듭니다. 보고서(report.json)의 원본 위치와 SHA-256으로 언제든 다시 확인할 수 있습니다.</div>
+  </aside>
+</main>
+
+<div class="modal" id="browser" hidden role="dialog" aria-modal="true" aria-labelledby="brTitle">
+  <div class="card ex">
+    <div class="row" style="justify-content:space-between"><h2 id="brTitle" style="margin:0">찾아보기</h2><button class="b sm" id="brCancel" aria-label="닫기">✕</button></div>
+    <div class="exbar">
+      <button class="b sm" id="brUp" title="위로">↑ 위로</button>
+      <input id="brAddr" class="mono" aria-label="주소" placeholder="경로를 입력하고 Enter">
+      <button class="b sm" id="brNew">＋ 새 폴더</button>
+    </div>
+    <div class="exbody">
+      <nav class="extree" aria-label="드라이브"><div class="small muted" style="padding:6px 10px">내 PC</div><ul id="brDrives"></ul></nav>
+      <div class="exlist">
+        <table><thead><tr><th>이름</th><th>수정한 날짜</th><th>종류</th><th style="text-align:right">크기</th></tr></thead><tbody id="brList"></tbody></table>
+        <div id="brEmpty" class="small muted" style="padding:16px" hidden>비어 있는 폴더입니다.</div>
+      </div>
+    </div>
+    <div class="exfoot">
+      <span class="small muted" style="flex:1;word-break:break-all">선택: <span id="brSel" class="mono"></span></span>
+      <button class="b" id="brCancel2">취소</button>
+      <button class="p" id="brPick">선택</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const T = new URLSearchParams(location.search).get('t') || '';
+const $ = id => document.getElementById(id);
+const api = async (path, body) => {
+  const r = await fetch(path, body === undefined ? {headers: {'X-Token': T}} :
+    {method: 'POST', headers: {'X-Token': T, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+};
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const gb = n => n >= 1e9 ? (n/1e9).toFixed(1)+' GB' : n >= 1e6 ? (n/1e6).toFixed(1)+' MB' : (n/1e3).toFixed(0)+' KB';
+const dur = s => { if (s == null) return ''; s = Math.round(s); const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  return (h ? h+':'+String(m).padStart(2,'0') : m) + ':' + String(x).padStart(2,'0'); };
+const sep = p => p.includes('\\') ? '\\' : '/';
+const join = (a, b) => a.replace(/[\\/]+$/, '') + sep(a) + b;
+const drive = p => (p.match(/^([a-zA-Z]):/) || [])[1]?.toUpperCase();
+const st = {info: null, report: null, items: [], vis: [], sel: new Set(), cur: null, poll: null};
+
+function show(n) {
+  for (let i = 1; i <= 4; i++) $('s'+i).hidden = i != n;
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.step == n));
+  if (n == 4) renderExport();
+}
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => show(+b.dataset.step));
+document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => show(+b.dataset.go));
+
+// ---- folder / file browser (Explorer-style)
+let brTarget = null, brFiles = false, brCur = '', brPicked = '', brEntries = [];
+const brDate = t => t ? new Date(t * 1000).toLocaleString('ko-KR', {year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}) : '';
+const brKind = e => e.disk ? '물리 디스크' : e.dir ? '파일 폴더' : ((e.name.match(/\.([^.]+)$/) || [])[1] || '').toUpperCase() + ' 파일';
+function brSelect(path) { brPicked = path; $('brSel').textContent = path || '(없음)'; $('brPick').disabled = !path; }
+async function brDrives() {
+  try {
+    const j = await api('/api/ls?path=');
+    const ds = j.entries.filter(e => e.dir || (brFiles && e.disk));
+    $('brDrives').innerHTML = ds.map((e, i) => `<li><button data-i="${i}" title="${esc(e.path)}">${e.disk ? '' : '💾 '}${esc(e.name)}</button></li>`).join('');
+    $('brDrives').querySelectorAll('button').forEach(b => b.onclick = () => {
+      const e = ds[+b.dataset.i];
+      if (e.dir) brOpen(e.path); else { brSelect(e.path); brDone(); }
+    });
+  } catch {}
+}
+async function brOpen(path) {
+  let j;
+  try { j = await api('/api/ls?path=' + encodeURIComponent(path)); }
+  catch (e) { $('brList').innerHTML = `<tr><td colspan="4" class="err">${esc(e.message)}</td></tr>`; $('brEmpty').hidden = true; return; }
+  brCur = j.path; $('brAddr').value = j.path; $('brUp').disabled = !j.path;
+  $('brUp').onclick = () => brOpen(j.parent || '');
+  document.querySelectorAll('#brDrives button').forEach(b => b.classList.toggle('on', !!j.path && j.path.toUpperCase().startsWith(b.title.toUpperCase())));
+  brEntries = j.path ? j.entries : j.entries.filter(e => e.dir || brFiles);
+  $('brList').innerHTML = brEntries.map((e, i) => {
+    const pickable = e.dir || brFiles;
+    return `<tr data-i="${i}" class="${pickable ? '' : 'dim'}"><td title="${esc(e.name)}">${e.disk ? '' : e.dir ? '📁 ' : '📄 '}${esc(e.name)}</td><td>${brDate(e.mtime)}</td><td>${brKind(e)}</td><td style="text-align:right">${e.size != null && !e.dir ? gb(e.size) : ''}</td></tr>`;
+  }).join('');
+  $('brEmpty').hidden = brEntries.length > 0;
+  brSelect(brFiles ? '' : brCur);
+  $('brList').querySelectorAll('tr').forEach(tr => {
+    const e = brEntries[+tr.dataset.i];
+    tr.onclick = () => {
+      if (!e.dir && !brFiles) return;
+      $('brList').querySelectorAll('tr.on').forEach(x => x.classList.remove('on')); tr.classList.add('on');
+      brSelect(e.dir && brFiles ? '' : e.path);
+    };
+    tr.ondblclick = () => { if (e.dir) brOpen(e.path); else if (brFiles) { brSelect(e.path); brDone(); } };
+  });
+}
+function brDone() {
+  if (!brPicked) return;
+  $(brTarget).value = brPicked; $(brTarget).dispatchEvent(new Event('input')); $('browser').hidden = true;
+  if (brTarget == 'imgPath' && /^\\\\\.\\/.test(brPicked)) $('btnInfo').onclick();
+}
+document.querySelectorAll('[data-browse]').forEach(b => b.onclick = () => {
+  brTarget = b.dataset.browse; brFiles = !!b.dataset.files;
+  $('brTitle').textContent = brFiles ? '파일 선택' : '폴더 선택';
+  $('brNew').hidden = brFiles; $('browser').hidden = false;
+  const v = $(brTarget).value.trim();
+  brDrives();
+  brOpen(v && !/^\\\\\.\\/.test(v) ? (brFiles ? v.replace(/[\\/][^\\/]*$/, '') : v) : '');
+});
+$('brAddr').addEventListener('keydown', e => { if (e.key == 'Enter') brOpen($('brAddr').value.trim()); });
+$('brPick').onclick = brDone;
+$('brNew').onclick = async () => {
+  if (!brCur) { alert('먼저 드라이브를 여세요.'); return; }
+  const name = (prompt('새 폴더 이름', '새 폴더') || '').trim(); if (!name) return;
+  try { const j = await api('/api/mkdir', {path: brCur, name, source: st.info?.path || $('imgPath').value.trim()}); await brOpen(brCur); brSelect(j.path);
+    const tr = [...$('brList').querySelectorAll('tr')].find(t => brEntries[+t.dataset.i]?.path == j.path); if (tr) { tr.classList.add('on'); tr.scrollIntoView({block: 'nearest'}); } }
+  catch (e) { alert(e.message); }
+};
+$('brCancel').onclick = $('brCancel2').onclick = () => $('browser').hidden = true;
+document.addEventListener('keydown', e => { if (e.key == 'Escape') $('browser').hidden = true; });
+
+// ---- 1 source
+function srcTab(k) {
+  document.querySelectorAll('.srcTab').forEach(b => b.classList.toggle('on', b.dataset.src == k));
+  $('srcDisk').hidden = k != 'disk'; $('srcFile').hidden = k != 'file';
+  if (k == 'disk') loadDisks();
+}
+document.querySelectorAll('.srcTab').forEach(b => b.onclick = () => srcTab(b.dataset.src));
+async function loadDisks() {
+  $('diskList').innerHTML = '<li class="small muted">디스크를 찾는 중…</li>';
+  let j; try { j = await api('/api/disks'); } catch (e) { $('diskList').innerHTML = `<li class="err">${esc(e.message)}</li>`; return; }
+  if (!j.disks.length) { $('diskList').innerHTML = '<li class="small muted">찾은 디스크가 없습니다. Windows에서만 쓸 수 있습니다.</li>'; return; }
+  $('diskList').innerHTML = j.disks.map((d, i) => `<li><button data-i="${i}" ${d.readable ? '' : 'disabled'}><span>${esc(d.label)}</span><span class="small muted">${gb(d.size)}</span></button></li>`).join('')
+    + (j.disks.some(d => !d.readable) ? '<li class="small muted">"관리자 권한 필요" 디스크는 이 프로그램을 마우스 오른쪽 버튼 › 관리자 권한으로 실행해야 열립니다.</li>' : '');
+  $('diskList').querySelectorAll('button').forEach(b => b.onclick = () => { $('imgPath').value = j.disks[+b.dataset.i].path; $('btnInfo').onclick(); });
+}
+$('btnDisks').onclick = loadDisks;
+$('btnInfo').onclick = async () => {
+  const p = $('imgPath').value.trim(); if (!p) return;
+  $('infoErr').hidden = true; $('btnInfo').disabled = true; $('btnInfo').textContent = '확인 중…';
+  try {
+    const j = await api('/api/info?path=' + encodeURIComponent(p));
+    st.info = j; localStorage.setItem('vr.img', p);
+    $('hdrName').textContent = j.name + ' · ' + gb(j.size);
+    $('iName').textContent = j.name; $('iSize').textContent = gb(j.size);
+    $('volWrap').style.display = j.volumes.length > 1 ? 'flex' : 'none'; $('volWrap').hidden = j.volumes.length <= 1;
+    $('volSel').innerHTML = '<option value="">전체 (볼륨 ' + j.volumes.length + '개)</option>' + j.volumes.map((v, i) => `<option value="${i + 1}">${i + 1}번: ${esc(v.fs)}, ${gb(v.length)}, 시작 ${gb(v.offset)}</option>`).join('');
+    $('iFs').textContent = j.volumes.map(v => v.fs).join(', ') + (j.volumes.length > 1 ? ` (볼륨 ${j.volumes.length}개)` : '');
+    const rec = j.recorder.map(r => r.system);
+    $('iFmt').textContent = j.jdr_files ? 'G-NET .jdr 링 녹화' : rec.length ? rec.join(', ') : '일반 (카빙)';
+    const live = j.volumes.reduce((a, v) => a + (v.live_files || 0), 0), del = j.volumes.reduce((a, v) => a + (v.deleted || 0), 0);
+    let d = `살아 있는 파일 ${live.toLocaleString()}개, 삭제 기록 ${del.toLocaleString()}개`;
+    if (j.jdr_files) d += `\n.jdr 파일 ${j.jdr_files}개: 파일 안에 남은 옛 녹화도 찾습니다`;
+    for (const r of j.recorder) d += r.system.startsWith('Dahua')
+      ? `\n${r.system} 디스크입니다 (${r.signature}). 프레임마다 기록된 카메라 번호와 녹화 시각을 읽어 카메라별·시간순으로 이어 붙입니다. 파일 목록(색인)은 아직 읽지 않습니다.`
+      : `\n${r.system} 디스크로 보입니다 (${r.signature}). 전용 파일시스템은 아직 읽지 못하고 프레임 카빙으로 찾습니다. 출처: ${r.source}`;
+    if (j.device) d = `물리 디스크를 읽기 전용으로 엽니다. 디스크에는 아무것도 쓰지 않습니다.\n` + d;
+    $('iDetail').textContent = d; $('infoCard').hidden = false;
+    const stamp = 'gui_' + new Date().toISOString().slice(0,16).replace(/[-:T]/g, '');
+    if (!$('outDir').value) $('outDir').value = j.out_base ? join(j.out_base, stamp) : join(p.replace(/[\\/][^\\/]*$/, ''), 'videorec_out' + sep(p) + stamp);
+    checkSame(); passText(); checkSpace();
+  } catch (e) { $('infoErr').textContent = e.message; $('infoErr').hidden = false; }
+  $('btnInfo').disabled = false; $('btnInfo').textContent = '확인';
+};
+$('btnSes').onclick = () => { $('expSes').value = $('sesPath').value; document.querySelector('input[name=how][value=session]').checked = true; show(4); };
+
+// ---- 2 scan
+function checkSame() {
+  const a = drive($('imgPath').value), b = drive($('outDir').value);
+  const onDisk = st.info?.device && b && (st.info.disk_letters || []).includes(b);
+  $('sameDisk').textContent = onDisk ? '저장 위치가 복구할 물리 디스크 안에 있습니다. 삭제된 영상을 덮어쓸 수 있어 이 위치로는 스캔할 수 없습니다. 다른 디스크를 고르세요.'
+    : '원본 이미지와 같은 디스크입니다. 이미지 파일이라 원본 장치에는 영향이 없지만, 공간이 충분한지 확인하세요.';
+  $('sameDisk').hidden = !(onDisk || (a && a == b));
+}
+$('outDir').oninput = () => { checkSame(); checkSpace(); };
+let spaceT = null;
+function scanGB() {
+  const size = (st.info?.size || 0) / 1e9, a = +$('rgA').value || 0, b = $('rgB').value.trim() ? Math.min(+$('rgB').value, size) : size;
+  return Math.max(0, b - a);
+}
+function checkSpace() {
+  clearTimeout(spaceT);
+  spaceT = setTimeout(async () => {
+    const out = $('outDir').value.trim(); st.free = null;
+    if (!out) { $('outSpace').textContent = ''; return; }
+    let j; try { j = await api('/api/space?path=' + encodeURIComponent(out)); } catch { return; }
+    st.free = j.free;
+    if (j.free == null) { $('outSpace').textContent = ''; return; }
+    const need = scanGB();
+    let t = `저장 위치의 남은 공간: ${gb(j.free)}`;
+    const low = need > 0 && j.free < need * 1e9;
+    if (low) t += ` · 검사할 ${need.toFixed(0)} GB보다 적습니다. 찾은 영상은 원본과 비슷한 크기로 저장되므로 도중에 공간이 모자라 멈출 수 있습니다.`;
+    $('outSpace').textContent = t; $('outSpace').className = low ? 'alert' : 'small muted';
+  }, 300);
+}
+['rgA', 'rgB'].forEach(id => $(id).addEventListener('input', checkSpace));
+function passes() {
+  const p = [];
+  if ($('tJdr').checked && (st.info?.recorder || []).some(r => r.system.startsWith('Dahua'))) p.push('dvr');
+  const carve = $('tStr').checked || $('tMjpeg').checked || $('tMp4v').checked || $('tMpg').checked;
+  if (carve) p.push('video'); else if ($('tCont').checked) p.push('files');
+  return p;
+}
+function passText() {
+  const n = passes().length, size = st.info?.size;
+  let t = n > 1 ? `원본을 ${n}번 읽습니다. DVR 프레임(카메라·시각) 검사에 한 번, 나머지 대상(MP4/AVI, H.264/H.265, MJPEG, MPEG-4, MPEG-1/2)은 모두 합쳐 한 번입니다.`
+    : `선택한 대상을 모두 원본 한 번 읽기로 함께 찾습니다.`;
+  t += ` 디스크 뒤쪽에서 새 영상 설정 정보(avcC/hvcC)가 나오면 프레임 찾기를 한 번 더 합니다.`;
+  if (size) t += ` 원본 ${gb(size)}를 한 번 읽는 시간은 스캔을 시작하면 첫 단계의 남은 시간으로 나옵니다.`;
+  $('passText').textContent = t;
+}
+['tJdr', 'tCont', 'tStr', 'tMjpeg', 'tMp4v', 'tMpg'].forEach(id => $(id).addEventListener('change', passText));
+$('btnFast').onclick = () => { $('tCont').checked = false; $('tMjpeg').checked = false; $('tMp4v').checked = false; $('tMpg').checked = false; $('tStr').checked = true; passText(); };
+const tval = id => $(id).value ? $(id).value.replace('T', ' ') : null;
+$('btnScan').onclick = async () => {
+  const img = $('imgPath').value.trim(), out = $('outDir').value.trim();
+  $('scanErr').hidden = true;
+  if (!img || !out) { $('scanErr').textContent = '원본과 저장 위치를 먼저 정하세요.'; $('scanErr').hidden = false; return; }
+  if (st.free != null && st.free < 1e9) { $('scanErr').textContent = `저장 위치의 남은 공간이 ${gb(st.free)}뿐입니다. 공간을 비우거나 다른 드라이브를 고르세요.`; $('scanErr').hidden = false; return; }
+  if (st.info?.device && (st.info.disk_letters || []).includes(drive(out))) { $('scanErr').textContent = '저장 위치가 복구할 디스크 안에 있습니다. 다른 디스크를 고르세요.'; $('scanErr').hidden = false; return; }
+  const a = ['recover', img, '-o', out, '--scope', document.querySelector('input[name=scope]:checked').value,
+    '--format', $('fmt').value, '--group', $('grp').value];
+  if (!$('tFs').checked) a.push('--no-fs');
+  if ($('tLive').checked && $('tFs').checked) a.push('--copy-live');
+  if (!$('tJdr').checked) a.push('--vendor', 'none');
+  if (!$('tCont').checked) a.push('--no-containers');
+  if (!$('tStr').checked && !$('tMjpeg').checked && !$('tMp4v').checked && !$('tMpg').checked) a.push('--no-streams');
+  else {
+    if (!$('tStr').checked) a.push('--no-h26x');
+    if (!$('tMjpeg').checked) a.push('--no-mjpeg', '--no-mj2k');
+    if (!$('tMp4v').checked) a.push('--no-mpeg4');
+    if (!$('tMpg').checked) a.push('--no-mpeg12');
+  }
+  const rA = $('rgA').value.trim(), rB = $('rgB').value.trim();
+  if (rA || rB) a.push('--range-gb', `${rA || 0}-${rB}`);
+  if ($('volSel').value) a.push('--volume', $('volSel').value);
+  st.plan = passes();
+  if (!$('tNoKey').checked) a.push('--jdr-drop-without-key');
+  if (!$('tAudio').checked) a.push('--no-audio');
+  if (tval('from')) a.push('--from', tval('from'));
+  if (tval('to')) a.push('--to', tval('to'));
+  if ($('cams').value.trim()) a.push('--camera', $('cams').value.trim());
+  if ($('saveSes').checked) a.push('--save-session', out.replace(/[\\/]+$/, '') + '_session.json');
+  try { await api('/api/run', {args: a}); st.sawRun = true; localStorage.setItem('vr.out', out); $('resOut').value = out; startPoll(); }
+  catch (e) { $('scanErr').textContent = e.message; $('scanErr').hidden = false; }
+};
+$('btnStop').onclick = async () => {
+  const r = await api('/api/stop', {}).catch(e => ({error: e.message}));
+  if (r && !r.hard) $('btnStop').textContent = '바로 끝내기 (보고서 없이)';
+};
+function startPoll() { clearInterval(st.poll); st.poll = setInterval(poll, 1000); poll(); }
+async function poll() {
+  let j; try { j = await api('/api/status'); } catch { return; }
+  const m = (j.progress || '').match(/\[(\w+)\]\s+([\d.]+)%\s+([\d.]+)\/([\d.]+) GB\s+elapsed (\S+)\s+remaining (\S+)/);
+  let label = {fs: '파일 시스템 분석 (삭제 기록 찾기)', scan: '녹화기 형식 검사', read: '세션 다시 읽기', files: 'MP4/AVI 파일 찾기', video: '영상 찾기 (파일·프레임을 한 번에)', frames: 'H.264/H.265 프레임 찾기', jpeg: 'MJPEG 프레임 찾기', mpeg4: 'MPEG-4 프레임 찾기', dvr: 'DVR 프레임 찾기 (카메라·시각)', mix: '여러 채널 블랙박스 프레임 찾기 (카메라·시각)'}[m?.[1]] || '';
+  const plan = st.plan || [], k = m ? plan.indexOf(m[1]) : -1;
+  if (k >= 0 && plan.length > 1) label = `${k + 1}/${plan.length}단계 ${label}`;
+  $('jobTitle').textContent = j.running ? (j.kind == 'export' ? '내보내는 중' : '스캔 중') + (label ? ' · ' + label : '')
+    : j.exit == null ? '대기 중' : j.exit == 0 ? '끝났습니다' : `멈췄습니다 (코드 ${j.exit})`;
+  $('jobBar').style.width = (j.running ? (m ? m[2] : 3) : j.exit == 0 ? 100 : 0) + '%';
+  let timing = '';
+  if (m) {
+    const secs = t => t.split(':').reduce((a, x) => a * 60 + +x, 0);
+    timing = `이 단계 ${m[2]}% · 지난 시간 ${m[5]} · 이 단계 남은 시간 ${m[6]}`;
+    const later = k >= 0 ? plan.length - k - 1 : 0, rate = +m[3] / Math.max(1, secs(m[5]));
+    if (later > 0 && rate > 0 && m[6] != '?') timing += ` · 전체 남은 시간 최대 약 ${dur(secs(m[6]) + later * (+m[4]) / rate)} (남은 ${later}단계 포함)`;
+  } else if (j.elapsed_s != null) timing = `지난 시간 ${dur(j.elapsed_s)}`;
+  $('jobTiming').textContent = timing;
+  $('jobLog').textContent = j.lines.join('\n'); $('jobLog').scrollTop = 1e9;
+  const errLine = !j.running && j.exit != null && j.exit != 0 ? ([...j.lines].reverse().find(l => /^Error:/.test(l)) || [...j.lines].reverse().find(l => !/^\s*(\d+:|at )/.test(l) && /error|cannot|failed/i.test(l))) : null;
+  $('jobErr').hidden = !errLine && !(!j.running && j.exit != null && j.exit != 0);
+  if (!$('jobErr').hidden) {
+    const full = /os error 112|not enough space|No space left|StorageFull|디스크 공간이 부족/i.test(errLine || '');
+    $('jobErr').textContent = full ? '저장 공간이 부족해서 멈췄습니다. 지금까지 찾은 영상 파일은 저장 폴더에 남아 있습니다. 공간을 비우거나 다른 드라이브를 골라 다시 시작하세요.'
+      : errLine ? '오류로 멈췄습니다: ' + errLine : `오류로 멈췄습니다 (코드 ${j.exit}). 저장 폴더의 videorec_error.txt에 자세한 내용이 있습니다.`;
+  }
+  $('btnStop').hidden = !j.running; $('btnScan').disabled = j.running;
+  if (!j.running) $('btnStop').textContent = '멈추기 (찾은 것까지 저장)';
+  $('btnResults').hidden = !(j.exit == 0 && j.kind == 'recover');
+  if (j.running) st.sawRun = true;
+  if (!j.running) { clearInterval(st.poll); if (st.sawRun && j.exit == 0) { st.sawRun = false; if (j.kind == 'recover') loadReport(); else expDone(); } }
+}
+
+// ---- 3 results
+const cam = it => it.channel != null ? 'CAM' + (it.channel + 1) : '';
+const older = it => /earlier (ring )?pass|older footage/i.test(it.notes || '');
+const hasAudio = it => /audio: (\d+) AD/.test(it.notes || '');
+const origin = it => (it.kind == 'jdr_clip' || it.kind == 'dvr_clip' ? older(it) : !it.live_file) ? 'deleted' : 'live';
+const good = it => it.status == 'ok';
+const when = it => it.start_time || it.modified || it.created || '';
+const how = it => ({
+  fs_deleted_file: '지워진 파일 (파일시스템 기록으로 되살림)',
+  fs_live_file: '남아 있는 파일 (파일시스템에서 그대로 복사)',
+  carved_container: '지워진 파일 (빈 공간에서 찾은 온전한 파일)',
+  carved_stream: '영상 조각 (프레임을 이어 붙임)',
+  carved_mjpeg: '영상 조각 (JPEG 프레임을 이어 붙임)',
+  carved_mpeg4: '영상 조각 (MPEG-4 Part 2 프레임을 이어 붙임)',
+  carved_mpeg: '영상 조각 (MPEG-1/2)',
+  carved_mj2k: '영상 조각 (JPEG 2000 프레임을 이어 붙임)',
+  jdr_clip: '녹화기 형식 (.jdr)',
+  dvr_clip: 'DVR 녹화 프레임 (Dahua)',
+  mix_clip: '여러 채널 MP4에서 카메라별로 나눈 영상'
+}[it.kind] || it.kind) + (it.kind == 'jdr_clip' ? (older(it) ? ', 링 녹화에서 덮어쓰이기 전 남은 옛 영상' : ', 지금 카드에 남아 있는 녹화')
+  : it.kind == 'dvr_clip' ? (older(it) ? ', 새 녹화가 덮어쓴 자리 뒤에 남은 옛 영상' : ', 그 자리의 가장 최근 기록 (DVR 목록에 남아 있는지는 확인하지 못함)') : '');
+st.node = ''; st.origin = ''; st.shown = 300; st.thumbs = new Map(); st.camOff = new Set(); st.open = new Set();
+
+async function loadReport() {
+  const out = $('resOut').value.trim(); if (!out) return;
+  $('resErr').hidden = true;
+  try {
+    const r = await api('/api/report?out=' + encodeURIComponent(out));
+    st.report = r; st.out = out;
+    st.items = r.items.filter(i => i.output && i.size > 0);
+    st.noFile = r.items.length - st.items.length;
+    st.sel.clear(); st.cur = null; st.node = ''; st.shown = 300; st.thumbs.clear(); st.camOff.clear();
+    const days = st.items.map(when).filter(Boolean).sort();
+    if (days.length) { const d = days[days.length - 1]; st.open = new Set([d.slice(0, 4), d.slice(0, 7)]); }
+    const cams = [...new Set(st.items.map(cam).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
+    $('camBox').innerHTML = cams.map(c => `<label><input type="checkbox" data-cam="${c}" checked> ${c}</label>`).join('');
+    $('camBox').querySelectorAll('input').forEach(b => b.onchange = () => { b.checked ? st.camOff.delete(b.dataset.cam) : st.camOff.add(b.dataset.cam); st.shown = 300; render(); });
+    $('hdrName').textContent = (r.summary.source || '').split(/[\\/]/).pop() + ' · 영상 ' + st.items.length.toLocaleString() + '개';
+    $('detail').hidden = true; $('detailEmpty').hidden = false;
+    render(); show(3);
+  } catch (e) { $('resErr').textContent = e.message; $('resErr').hidden = false; show(3); }
+}
+$('btnLoad').onclick = loadReport;
+$('originSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+  st.origin = b.dataset.o; $('originSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x == b)); st.shown = 300; render(); });
+['fOk', 'fBad'].forEach(id => $(id).onchange = () => { st.shown = 300; render(); });
+$('fSort').onchange = render; $('fQ').oninput = () => { st.shown = 300; render(); };
+$('btnMore').onclick = () => { st.shown += 300; render(); };
+
+// Items passing every filter except the date node (for tree counts).
+function baseFilter(i, skip) {
+  if (skip != 'origin' && st.origin && origin(i) != st.origin) return false;
+  if (skip != 'status' && !(good(i) ? $('fOk').checked : $('fBad').checked)) return false;
+  if (cam(i) && st.camOff.has(cam(i))) return false;
+  const q = $('fQ').value.trim().toLowerCase();
+  return !q || i.output.toLowerCase().includes(q);
+}
+function inNode(i) { const w = when(i); return !st.node || (st.node == '?' ? !w : w.startsWith(st.node)); }
+
+function renderTree(base) {
+  const by = {}; let unknown = 0;
+  for (const i of base) { const w = when(i); if (!w) { unknown++; continue; }
+    const y = w.slice(0, 4), m = w.slice(0, 7), d = w.slice(0, 10);
+    by[y] ??= {n: 0, m: {}}; by[y].n++; by[y].m[m] ??= {n: 0, d: {}}; by[y].m[m].n++; by[y].m[m].d[d] = (by[y].m[m].d[d] || 0) + 1; }
+  const node = (key, label, n, depth, kids) => {
+    const open = st.open.has(key);
+    return `<button role="treeitem" data-k="${key}" class="${st.node == key ? 'on' : ''}" style="padding-left:${6 + depth * 16}px" ${kids ? `aria-expanded="${open}"` : ''}>
+      <span class="tw" data-tw="${kids ? key : ''}">${kids ? (open ? '▾' : '▸') : ''}</span>${label}<span class="n">${n.toLocaleString()}</span></button>`;
+  };
+  let h = node('', '전체', base.length, 0, false);
+  for (const y of Object.keys(by).sort().reverse()) {
+    h += node(y, y + '년', by[y].n, 0, true);
+    if (!st.open.has(y)) continue;
+    for (const m of Object.keys(by[y].m).sort().reverse()) {
+      h += node(m, +m.slice(5) + '월', by[y].m[m].n, 1, true);
+      if (!st.open.has(m)) continue;
+      for (const d of Object.keys(by[y].m[m].d).sort().reverse()) h += node(d, +d.slice(8) + '일', by[y].m[m].d[d], 2, false);
+    }
+  }
+  if (unknown) h += node('?', '녹화 시각 모름', unknown, 0, false);
+  $('tree3').innerHTML = h;
+  $('tree3').querySelectorAll('button').forEach(b => b.onclick = e => {
+    const k = b.dataset.k;
+    if (e.target.dataset.tw || (st.node == k && b.hasAttribute('aria-expanded'))) { st.open.has(k) ? st.open.delete(k) : st.open.add(k); }
+    else { st.node = k; if (b.hasAttribute('aria-expanded')) st.open.add(k); }
+    st.shown = 300; render();
+  });
+}
+
+function render() {
+  if (!st.items) return;
+  const base = st.items.filter(i => baseFilter(i));
+  // Segment and status counts.
+  const segBase = st.items.filter(i => baseFilter(i, 'origin') && inNode(i));
+  const counts = {'': segBase.length, live: segBase.filter(i => origin(i) == 'live').length, deleted: segBase.filter(i => origin(i) == 'deleted').length};
+  $('originSeg').querySelectorAll('button').forEach(b => b.querySelector('span').textContent = counts[b.dataset.o].toLocaleString());
+  const stBase = st.items.filter(i => baseFilter(i, 'status') && inNode(i));
+  $('cOk').textContent = stBase.filter(good).length.toLocaleString(); $('cBad').textContent = stBase.filter(i => !good(i)).length.toLocaleString();
+  renderTree(base);
+  const srt = $('fSort').value;
+  st.vis = base.filter(inNode).sort((a, b) => srt == 'name' ? a.output.localeCompare(b.output)
+    : srt == 'old' ? when(a).localeCompare(when(b)) || a.id - b.id : when(b).localeCompare(when(a)) || a.id - b.id);
+  const ok = st.vis.filter(good).length;
+  $('resSum').textContent = `${st.vis.length.toLocaleString()}개 · 온전 ${ok.toLocaleString()} · 손상 ${(st.vis.length - ok).toLocaleString()} · ${gb(st.vis.reduce((a, i) => a + i.size, 0))}`
+    + (st.noFile ? ` · 파일로 만들지 못한 삭제 기록 ${st.noFile}개는 빼고 표시` : '');
+  const shown = st.vis.slice(0, st.shown);
+  $('grid').innerHTML = shown.map((i, k) => `<div class="tile ${st.cur == i ? 'on' : ''}" data-k="${k}" tabindex="0" role="button" aria-label="${esc(i.output)}">
+    <div class="th"><span class="ph">불러오는 중</span>
+      <div class="bd"><span class="bdg ${origin(i) == 'deleted' ? 'del' : 'live'}">${origin(i) == 'deleted' ? '삭제됨' : '남아 있음'}</span>${good(i) ? '' : '<span class="bdg bad">손상</span>'}</div>
+      <input type="checkbox" class="ck" aria-label="선택" ${st.sel.has(i.output) ? 'checked' : ''}>
+      ${i.duration_s != null ? `<span class="du">${dur(i.duration_s)}</span>` : ''}</div>
+    <div class="cap"><div>${esc(when(i).replace('T', ' ').slice(0, 19) || '시각 모름')} ${cam(i)}</div><div class="f">${esc(i.output.split('/').pop())}</div></div></div>`).join('');
+  $('btnMore').hidden = st.vis.length <= st.shown;
+  $('grid').querySelectorAll('.tile').forEach(t => {
+    const it = shown[+t.dataset.k];
+    t.onclick = e => { if (e.target.classList.contains('ck')) { e.target.checked ? st.sel.add(it.output) : st.sel.delete(it.output); selCount(); return; } pick(it); };
+    t.onkeydown = e => { if (e.key == 'Enter' || e.key == ' ') { e.preventDefault(); pick(it); } };
+    thumbInto(t.querySelector('.th'), it);
+  });
+  selCount();
+}
+function selCount() { $('selCount').textContent = `선택 ${st.sel.size.toLocaleString()}개`; }
+$('btnAll').onclick = () => { st.vis.forEach(i => st.sel.add(i.output)); render(); };
+$('btnNone').onclick = () => { st.sel.clear(); render(); };
+$('btnSaveSel').onclick = () => { document.querySelector('input[name=what][value=sel]').checked = true; show(4); };
+$('btnSaveVis').onclick = () => { document.querySelector('input[name=what][value=vis]').checked = true; show(4); };
+
+// ---- thumbnails: decoded one at a time from a one-frame MP4 and kept as JPEG
+const thumbQ = []; let thumbBusy = 0;
+const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { io.unobserve(e.target); thumbQ.push(e.target); pumpThumbs(); } }), {rootMargin: '300px'});
+function thumbInto(el, it) {
+  el._it = it;
+  const c = st.thumbs.get(it.output);
+  if (c) return setThumb(el, c); else io.observe(el);
+}
+function setThumb(el, c) {
+  const ph = el.querySelector('.ph'); if (!ph) return;
+  if (c.img) { const im = document.createElement('img'); im.alt = ''; im.src = c.img; ph.replaceWith(im); }
+  else ph.textContent = c.err;
+}
+async function pumpThumbs() {
+  while (thumbBusy < 2 && thumbQ.length) {
+    const el = thumbQ.shift(); if (!el.isConnected) continue;
+    thumbBusy++;
+    makeThumb(el._it).then(c => { st.thumbs.set(el._it.output, c); document.querySelectorAll('.tile .th').forEach(t => { if (t._it == el._it) setThumb(t, c); }); })
+      .finally(() => { thumbBusy--; pumpThumbs(); });
+  }
+}
+async function makeThumb(it) {
+  try {
+    const r = await fetch('/api/thumb?out=' + encodeURIComponent(st.out) + '&f=' + encodeURIComponent(it.output), {headers: {'X-Token': T}});
+    if (!r.ok) { const t = await r.text(); return {err: /key frame/.test(t) ? '키프레임이 없어 그림 없음' : it.codec == 'mpeg4' ? 'MPEG-4 Part 2: 기본 플레이어로 보세요' : /^mpeg/.test(it.codec || '') ? 'MPEG-1/2: 기본 플레이어로 보세요' : it.codec == 'jpeg2000' ? 'JPEG 2000: 기본 플레이어로 보세요' : '미리보기 없음'}; }
+    const blob = await r.blob(); const url = URL.createObjectURL(blob);
+    if (blob.type.startsWith('image/')) return {img: url};
+    const v = document.createElement('video'); v.muted = true; v.preload = 'auto'; v.src = url;
+    await new Promise((ok, bad) => { v.onloadeddata = ok; v.onerror = bad; setTimeout(bad, 8000); });
+    const cv = document.createElement('canvas'); const w = 320; cv.width = w; cv.height = Math.round(w * v.videoHeight / v.videoWidth) || 180;
+    cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
+    v.removeAttribute('src'); v.load(); URL.revokeObjectURL(url);
+    return {img: cv.toDataURL('image/jpeg', 0.8)};
+  } catch { return {err: it.codec == 'h265' ? 'H.265: 이 브라우저는 그림을 못 보여 줌' : '이 브라우저에서 그림을 만들지 못함'}; }
+}
+
+// ---- detail and preview
+const pv = $('pv'), pa = $('pa');
+function syncAudio() { if (!pa.src) return; if (Math.abs(pa.currentTime - pv.currentTime) > 0.25) pa.currentTime = pv.currentTime; }
+pv.onplay = () => { if (pa.src) { pa.currentTime = pv.currentTime; pa.play().catch(() => {}); } };
+pv.onpause = () => pa.pause();
+pv.onseeked = syncAudio; pv.ontimeupdate = syncAudio; pv.onratechange = () => pa.playbackRate = pv.playbackRate;
+pv.onvolumechange = () => { pa.volume = pv.volume; pa.muted = pv.muted; };
+function pvMsg(t) { $('pvMsg').textContent = t; $('pvMsg').hidden = !t; }
+async function pick(i) {
+  st.cur = i; $('detail').hidden = false; $('detailEmpty').hidden = true;
+  document.querySelectorAll('.tile').forEach(t => t.classList.toggle('on', st.vis[+t.dataset.k] == i));
+  $('dFile').textContent = i.output;
+  $('dBadges').innerHTML = `<span class="bdg ${origin(i) == 'deleted' ? 'del' : 'live'}">${origin(i) == 'deleted' ? '삭제됨' : '남아 있음'}</span><span class="bdg ${good(i) ? 'good' : 'bad'}">${good(i) ? '온전' : '손상 (일부만 재생)'}</span>`;
+  $('dTime').textContent = when(i).replace('T', ' ') + (i.end_time ? ' ~ ' + i.end_time.slice(11, 19) : '') || '모름';
+  $('dCam').textContent = (cam(i) || '—') + (i.width ? ` · ${i.width}×${i.height}` : '');
+  $('dLen').textContent = i.duration_s != null ? dur(i.duration_s) : '—';
+  $('dSize').textContent = gb(i.size) + ` (${i.size.toLocaleString()} B)`;
+  $('dFrames').textContent = i.frames != null ? `${i.frames.toLocaleString()} (키프레임 ${i.keyframes ?? 0})` : '—';
+  $('dAudio').textContent = hasAudio(i) ? '있음' : i.kind == 'jdr_clip' ? '없음 (그 시간대 소리 조각이 없음)' : i.kind == 'mix_clip' ? '없음 (이 녹화기의 소리 형식을 아직 확인하지 못함)' : '—';
+  $('dHow').textContent = how(i);
+  $('dOff').textContent = '0x' + i.source_start.toString(16) + ' – 0x' + i.source_end.toString(16);
+  $('dIn').textContent = i.live_file ? `${i.live_file} (+0x${(i.live_file_offset || 0).toString(16)})` : i.name_hint || '—';
+  $('dSha').textContent = i.sha256;
+  $('dNote').textContent = koNote(i.notes); $('dNote').title = i.notes || '';
+  // Preview: camera MP4 files play directly; others (AVI, recorder sound) go through the preview cache.
+  pv.pause(); pa.pause(); pa.removeAttribute('src'); pv.removeAttribute('src'); pv.load();
+  $('pvNote').textContent = ''; pvMsg('미리보기 준비 중…');
+  const direct = /\.mp4$/i.test(i.output) && i.kind != 'jdr_clip';
+  const usePreview = async () => {
+    const r = await api('/api/preview?out=' + encodeURIComponent(st.out) + '&f=' + encodeURIComponent(i.output));
+    if (st.cur != i) return;
+    if (r.error && /^mpeg(1|2|-ps)/.test(i.codec || '')) { pvMsg('MPEG-1/2 영상은 브라우저에서 재생되지 않습니다. "기본 플레이어로 열기"를 쓰세요.'); return; }
+    if (r.error && i.codec == 'mpeg4') { pvMsg('MPEG-4 Part 2(XviD) 영상은 브라우저에서 재생되지 않습니다. "기본 플레이어로 열기"를 쓰세요.'); return; }
+    if (r.error) { pvMsg(/key frame/.test(r.error) ? '키프레임이 없어 브라우저에서는 재생할 수 없습니다. "기본 플레이어로 열기"를 쓰세요.' : /Motion-JPEG/.test(r.error) ? 'MJPEG 영상은 "기본 플레이어로 열기"로 보세요.' : '미리보기를 만들지 못했습니다: ' + r.error); return; }
+    pv.src = r.video; if (r.audio) pa.src = r.audio;
+    const notes = [];
+    if (r.truncated) notes.push('미리보기는 처음 2분입니다. 전체는 기본 플레이어로 여세요.');
+    if (r.skipped_leading) notes.push(`키프레임 앞의 ${r.skipped_leading}프레임은 미리보기에서 뺐습니다.`);
+    if (!r.audio && hasAudio(i)) notes.push('소리는 기본 플레이어에서 들을 수 있습니다.');
+    $('pvNote').textContent = notes.join(' '); pvMsg('');
+  };
+  try {
+    if (direct) {
+      pv.onerror = () => { pv.onerror = null; if (st.cur != i) return;
+        if (i.codec == 'h265') { pvMsg('H.265 영상은 이 브라우저에서 재생되지 않을 수 있습니다. "기본 플레이어로 열기"를 쓰세요.'); return; }
+        usePreview().catch(e => pvMsg(e.message)); };
+      pv.src = `/media/out?t=${T}&out=${encodeURIComponent(st.out)}&f=${encodeURIComponent(i.output)}`; pvMsg('');
+    } else { pv.onerror = null; await usePreview(); }
+  } catch (e) { pvMsg(e.message); }
+}
+$('btnPlay').onclick = () => st.cur && api('/api/open', {path: join(st.out, st.cur.output)}).catch(e => alert(e.message));
+$('btnReveal').onclick = () => st.cur && api('/api/open', {path: join(st.out, st.cur.output), select: true}).catch(e => alert(e.message));
+function koNote(n) {
+  return (n || '').split('; ').map(x => x
+    .replace('timestamps from recorder', '시각은 녹화기 기록')
+    .replace(/^audio: (\d+) AD chunks, ([\d.]+) s of 16-bit PCM at (\d+) Hz$/, '소리: AD 청크 $1개, $2초 (16비트 PCM, $3Hz)')
+    .replace('no audio found for this time', '이 시간대의 소리 없음')
+    .replace('sound not recovered (its coding in this recorder is not identified)', '소리는 복구하지 못함 (이 녹화기의 소리 형식을 아직 확인하지 못함)')
+    .replace(/^first (\d+) of (\d+) frames have no key frame before them, so their picture is damaged$/, '앞쪽 $1/$2 프레임은 키프레임이 없어 화면이 깨집니다')
+    .replace(/^recorded before the current pass of this file began \(([^)]+)\) — left over from an earlier pass of the ring$/, '이 파일의 현재 바퀴($1)보다 먼저 녹화됨: 링의 이전 바퀴에서 남은 영상')
+    .replace('existing file copied from the file system', '파일시스템에 남아 있던 파일을 그대로 복사')
+    .replace('structure not verified', '파일 구조는 확인하지 못함')
+    .replace('container structure verified', '파일 구조 검사 통과')
+    .replace(/^older footage: found after newer recording in the same 2 MiB area of the disk, i\.e\. left over where the recorder has since written$/, '옛 영상: 디스크의 같은 2 MB 구역에서 더 최근 녹화 뒤에 남아 있던 조각 (녹화기가 새로 쓴 자리에 남은 이전 녹화)')
+    .replace('creation time from the MP4 header (recorder clock)', '녹화 시각은 MP4 헤더의 생성 시각 (녹화기 시계 기준)')
+    .replace(/^(\d+) of (\d+) frames before the first keyframe dropped$/, '첫 키프레임 앞의 $1/$2 프레임은 뺐습니다')
+    .replace('video only (audio not carved)', '영상만 (소리는 찾지 않음)')
+    .replace(/^MPEG-4 Part 2$/, 'MPEG-4 Part 2 (XviD/DivX 계열)')
+    .replace('MPEG-1/2 video elementary stream, bytes as found', 'MPEG-1/2 영상 스트림, 원본 바이트 그대로. 마지막 프레임은 끝을 정확히 알 수 없어 아래쪽이 깨질 수 있음')
+    .replace('frame rate from the sequence header', '프레임 속도는 스트림 헤더 값')
+    .replace('every JPEG 2000 frame decodes on its own', '프레임마다 따로 풀리는 JPEG 2000')
+    .replace(/^(\d+) of (\d+) video chunks do not start with a valid NAL unit \(overwritten or fragmented\)$/, '영상 청크 $2개 중 $1개가 덮어쓰였거나 조각남')
+    .replace('box chain runs past the readable area or mdat has size 0 (incomplete recording)', '파일이 읽을 수 있는 영역 밖으로 이어짐 (끝이 잘림)')
+    .replace(/^MPEG program stream: unbroken chain of (\d+) packs copied as found \(video and any audio inside it\)$/, 'MPEG 프로그램 스트림: 끊기지 않은 팩 $1개를 그대로 복사 (안의 영상·소리 포함)')
+    .replace(/^MP4 with intact index but data cut off or overwritten: kept the first (\d+) of (\d+) video frames with (\d+) track\(s\), (\d+) of them audio, and the recorded timing \(index rewritten for the kept part\)$/, '색인은 온전하고 뒤쪽 데이터가 잘리거나 덮어쓰인 MP4: 영상 $2프레임 중 앞의 $1프레임을 트랙 $3개(소리 $4개)와 원래 시간 정보 그대로 살림')
+    .replace('MPEG-4 Part 2; frame rate not in the stream, 25 fps assumed (use --fps)', 'MPEG-4 Part 2, 프레임 속도가 스트림에 없어 25fps로 가정')
+  ).join('\n');
+}
+
+// ---- 4 export
+document.querySelectorAll('input[name=how]').forEach(r => r.onchange = renderExport);
+document.querySelectorAll('input[name=what]').forEach(r => r.onchange = renderExport);
+$('dest').oninput = renderExport;
+function expFiles() {
+  const w = document.querySelector('input[name=what]:checked').value;
+  return w == 'sel' ? [...st.sel] : w == 'vis' ? st.vis.map(i => i.output) : st.items.map(i => i.output);
+}
+function renderExport() {
+  const how = document.querySelector('input[name=how]:checked').value;
+  $('whatSet').hidden = how != 'copy'; $('sesRow').hidden = how != 'session';
+  $('copyNote').textContent = st.report ? `${$('resOut').value} 에서` : '먼저 3단계에서 결과를 불러오세요';
+  $('wSel').textContent = `선택한 영상 ${st.sel.size.toLocaleString()}개`;
+  $('wVis').textContent = `지금 보이는 목록 전체 ${st.vis.length.toLocaleString()}개 (거르기 적용)`;
+  $('wAll').textContent = `찾은 영상 전부 ${st.items.length.toLocaleString()}개`;
+  const a = drive($('imgPath').value || st.report?.summary?.source || ''), b = drive($('dest').value);
+  $('destWarn').hidden = !(a && a == b);
+  const dest = $('dest').value || '[저장 위치]';
+  if (how == 'copy') {
+    const f = expFiles();
+    $('tree').textContent = dest + '\n' + f.slice(0, 12).map(x => '├ ' + x).join('\n') + (f.length > 12 ? `\n├ … 외 ${f.length - 12}개` : '') + '\n└ report.json';
+  } else {
+    $('tree').textContent = dest + '\n├ (2단계의 형식·폴더·시각·카메라 설정으로 다시 만든 영상)\n├ report.json\n└ report.csv';
+  }
+}
+$('btnExport').onclick = async () => {
+  const how = document.querySelector('input[name=how]:checked').value, dest = $('dest').value.trim();
+  const msg = (t, err) => { $('expMsg').className = err ? 'err' : 'note'; $('expMsg').textContent = t; $('expMsg').hidden = false; };
+  if (!dest) return msg('저장 위치를 정하세요.', 1);
+  try {
+    if (how == 'copy') {
+      const f = expFiles(); if (!f.length) return msg('내보낼 영상이 없습니다.', 1);
+      msg(`${f.length}개 복사 중…`);
+      const r = await api('/api/copy', {out: $('resOut').value.trim(), dest, files: f});
+      msg(`${r.copied}개 (${gb(r.bytes)})를 ${r.dest}에 저장했습니다.`);
+    } else {
+      const a = ['export', $('expSes').value.trim(), '-o', dest, '--format', $('fmt').value, '--group', $('grp').value];
+      if ($('imgPath').value.trim()) a.push('--image', $('imgPath').value.trim());
+      if (tval('from')) a.push('--from', tval('from'));
+      if (tval('to')) a.push('--to', tval('to'));
+      if ($('cams').value.trim()) a.push('--camera', $('cams').value.trim());
+      if (!$('tAudio').checked) a.push('--no-audio');
+      await api('/api/run', {args: a}); st.sawRun = true; msg('내보내는 중입니다. 진행 상황은 2단계 화면 오른쪽에 나옵니다.'); startPoll();
+    }
+  } catch (e) { msg(e.message, 1); }
+};
+function expDone() { const m = $('expMsg'); m.className = 'note'; m.textContent = '내보내기가 끝났습니다: ' + $('dest').value; m.hidden = false; }
+
+// restore last paths
+$('imgPath').value = localStorage.getItem('vr.img') || '';
+$('resOut').value = localStorage.getItem('vr.out') || '';
+poll().then(() => {});
+</script>
+</body>
+</html>
