@@ -77,7 +77,8 @@ pub fn analyze(src: &Source, vol: &Volume) -> Result<Option<FsInfo>> {
         FsKind::Btrfs => crate::btrfs::Btrfs::open(src, vol)?.analyze().map(Some),
         FsKind::HfsPlus => crate::hfsplus::HfsPlus::open(src, vol)?.analyze().map(Some),
         FsKind::Jfs => crate::jfs::Jfs::open(src, vol)?.analyze().map(Some),
-        FsKind::Reiser | FsKind::Apfs => Ok(None),
+        FsKind::Reiser => crate::reiser::Reiser::open(src, vol)?.analyze().map(Some),
+        FsKind::Apfs => crate::apfs::Apfs::open(src, vol)?.analyze().map(Some),
         FsKind::Unknown => Ok(None),
     }
 }

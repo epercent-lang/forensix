@@ -6,6 +6,7 @@
 //! 2. container carving (intact MP4/MOV/AVI),
 //! 3. frame-level carving of H.264/H.265 streams in what is left.
 
+mod apfs;
 mod avi;
 mod btrfs;
 mod codec;
@@ -30,6 +31,7 @@ mod preview;
 mod progress;
 mod ranges;
 mod recorder;
+mod reiser;
 mod report;
 mod session;
 mod stream;

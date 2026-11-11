@@ -33,6 +33,8 @@
 
 **XFS, Btrfs:** 살아 있는 파일과 빈 공간을 읽고, 삭제된 파일을 이름·크기·시각과 함께 찾습니다. XFS는 삭제 때 inode의 블록 목록이 지워지므로 로그에 남은 옛 inode 사본을 씁니다(`src/xfs.rs`, 출처: XFS Algorithms & Data Structures, xfs_format.h). Btrfs는 쓰기마다 트리 블록을 새로 만들므로 남아 있는 옛 블록을 체크섬 확인 후 씁니다(`src/btrfs.rs`, 출처: 커널 Btrfs 문서 On-disk format, btrfs_tree.h). 둘 다 데이터 블록이 다른 데 다시 쓰이지 않은 경우만 복구합니다.
 
+**HFS+, APFS, JFS, ReiserFS:** 살아 있는 파일과 빈 공간을 읽고 삭제된 파일을 찾습니다. JFS는 삭제 후에도 inode에 크기와 블록 목록이 남습니다(`src/jfs.rs`, 출처: 리눅스 커널 fs/jfs 헤더). ReiserFS는 저널과 빈 블록에 남은 옛 리프 노드를 씁니다(`src/reiser.rs`, 출처: 커널 fs/reiserfs/reiserfs.h). APFS는 빈 블록에 남은 옛 트리 노드를 체크섬 확인 후 씁니다(`src/apfs.rs`, 출처: Apple File System Reference). HFS+는 카탈로그 노드의 빈 자리와 저널에 남은 레코드를 씁니다(`src/hfsplus.rs`, 출처: Apple TN1150). ReiserFS와 APFS의 빈 블록 탐색은 64GiB 이하 볼륨에서만 하며 `VIDEOREC_FS_SCAN_GB`로 바꿉니다. 시험 이미지는 `tools/vm_fs_images.sh`(QEMU와 우분투 커널 모듈)로 만들었고, 맥에서 실제로 지운 이미지로는 검증하지 못했습니다.
+
 **Motion JPEG 2000:** JPEG 2000 코드스트림(ISO/IEC 15444-1)을 찾아 AVI로 저장합니다(`src/mj2k.rs`). 끄려면 `--no-mj2k`.
 
 **볼륨 고르기:** `--volume 2`(또는 `1,3`)로 `info`가 보여 주는 순서의 볼륨만 검사합니다.

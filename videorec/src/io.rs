@@ -536,6 +536,9 @@ fn detect_at(src: &Source, offset: u64, boot: &[u8]) -> FsKind {
     if crate::xfs::is_xfs(boot) {
         return FsKind::Xfs;
     }
+    if crate::apfs::is_apfs(boot) {
+        return FsKind::Apfs;
+    }
     match src.read_vec(offset + 1024, 1024) {
         Ok(sb) if crate::ext4::is_ext(&sb) => return FsKind::Ext,
         Ok(sb) if crate::hfsplus::is_hfsplus(&sb) => return FsKind::HfsPlus,
@@ -547,6 +550,7 @@ fn detect_at(src: &Source, offset: u64, boot: &[u8]) -> FsKind {
     }
     match src.read_vec(offset + 0x10000, 0x48) {
         Ok(sb) if crate::btrfs::is_btrfs(&sb) => FsKind::Btrfs,
+        Ok(sb) if crate::reiser::is_reiser(&sb) => FsKind::Reiser,
         _ => FsKind::Unknown,
     }
 }

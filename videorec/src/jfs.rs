@@ -248,7 +248,7 @@ impl<'a> Jfs<'a> {
             }
             let e = base + s * 32;
             let len = b[e + 5] as usize;
-            if len == 0 || len > head || b[e + 4] != 0xFF {
+            if len == 0 {
                 continue;
             }
             if let Some(name) = name_at(s, false)
