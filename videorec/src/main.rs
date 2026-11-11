@@ -515,6 +515,24 @@ fn volumes(src: &Source) -> Result<Vec<Volume>> {
             length: src.len(),
             kind: FsKind::Unknown,
         });
+        return Ok(v);
+    }
+    // Space the partition table does not cover (before, between and after
+    // the partitions) is scanned too, as volumes without a file system:
+    // recorders often keep their data outside any partition. Listed after
+    // the partitions so that their numbers stay the same.
+    let mut used: Vec<(u64, u64)> = v.iter().map(|x| (x.offset, x.offset + x.length)).collect();
+    used.sort();
+    let mut pos = 0u64;
+    for (a, b) in used.into_iter().chain([(src.len(), src.len())]) {
+        if a > pos && a - pos >= 1 << 20 {
+            v.push(Volume {
+                offset: pos,
+                length: a - pos,
+                kind: FsKind::Unknown,
+            });
+        }
+        pos = pos.max(b);
     }
     Ok(v)
 }
