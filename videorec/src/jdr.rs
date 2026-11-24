@@ -61,6 +61,8 @@ pub enum Origin {
     Dahua,
     /// Sample of a multi-channel dashcam MP4 (see `mixcam.rs`).
     Mixed,
+    /// Chunk of a multi-camera AVI (see `avimux.rs`).
+    Avi,
 }
 
 impl Origin {
@@ -69,6 +71,14 @@ impl Origin {
             Origin::Jdr => "jdr",
             Origin::Dahua => "dvr",
             Origin::Mixed => "mix",
+            Origin::Avi => "avi",
+        }
+    }
+    /// Sample rate of the mono 16-bit PCM in audio chunks.
+    fn audio_rate(self) -> u32 {
+        match self {
+            Origin::Avi => 16000,
+            _ => AUDIO_RATE,
         }
     }
 }
@@ -402,14 +412,20 @@ pub const AUDIO_RATE: u32 = 8000;
 /// PCM for `[t0, t1)` built from AD chunks sorted by time. Gaps longer than
 /// 200 ms are filled with silence so sound stays in step with the video.
 /// Returns (PCM bytes, chunks used).
-fn audio_for(src: &Source, audio: &[Chunk], t0: i64, t1: i64) -> Result<(Vec<u8>, usize)> {
-    let block_ms = 512 * 1000 / AUDIO_RATE as i64;
+fn audio_for(
+    src: &Source,
+    audio: &[Chunk],
+    t0: i64,
+    t1: i64,
+    rate: u32,
+) -> Result<(Vec<u8>, usize)> {
+    let block_ms = audio.first().map_or(512, |a| a.size as i64 / 2) * 1000 / rate as i64;
     let lo = audio.partition_point(|a| a.t_ms < t0 - block_ms / 2);
     let hi = audio.partition_point(|a| a.t_ms < t1);
     let mut pcm: Vec<u8> = vec![];
-    let slack = AUDIO_RATE as i64 / 5 * 2;
+    let slack = rate as i64 / 5 * 2;
     for a in &audio[lo..hi] {
-        let at = ((a.t_ms - t0).max(0) * AUDIO_RATE as i64 / 1000) * 2;
+        let at = ((a.t_ms - t0).max(0) * rate as i64 / 1000) * 2;
         if at > pcm.len() as i64 + slack {
             pcm.resize(at as usize, 0);
         }
@@ -661,19 +677,25 @@ fn write_one(
     let Some(entry) = mp4::sample_entry(&cfg) else {
         return Ok(None);
     };
+    // Placeholder time: the recording time of this piece is not known.
+    let timed = first.origin != Origin::Avi || first.t_ms >= crate::avimux::KNOWN_TIME_MS;
     let start = format_time(first.t_ms);
     let cam = format!("CAM{}", first.channel as u32 + 1);
     let sub = match o.group {
         Group::None => String::new(),
         Group::Camera => format!("{cam}/"),
-        Group::Date => format!("{}/", &start[..10]),
-        Group::CameraDate => format!("{cam}/{}/", &start[..10]),
+        Group::Date => format!("{}/", if timed { &start[..10] } else { "notime" }),
+        Group::CameraDate => format!("{cam}/{}/", if timed { &start[..10] } else { "notime" }),
     };
     std::fs::create_dir_all(out.join(&sub))?;
     let stem = format!(
         "{}_{id:05}_{cam}_{}",
         first.origin.stem(),
-        start.replace([':', '-'], "").replace(['T', '.'], "_")
+        if timed {
+            start.replace([':', '-'], "").replace(['T', '.'], "_")
+        } else {
+            format!("notime_{:x}", first.off)
+        }
     );
     let ext = match o.format {
         Format::Mp4 => "mp4",
@@ -691,7 +713,8 @@ fn write_one(
         Avi(AviWriter),
     }
     let last = seg[seg.len() - 1];
-    let (pcm, audio_chunks) = audio_for(src, audio, first.t_ms, last.t_ms + nominal as i64)?;
+    let rate = first.origin.audio_rate();
+    let (pcm, audio_chunks) = audio_for(src, audio, first.t_ms, last.t_ms + nominal as i64, rate)?;
     let mut w = match o.format {
         Format::Mp4 => W::Mp4(Mp4Writer::create(&path)?),
         Format::Avi if pcm.is_empty() => W::Avi(AviWriter::create(
@@ -709,18 +732,18 @@ fn write_one(
             first.height(),
             fps,
             1,
-            AUDIO_RATE,
+            rate,
         )?),
     };
     // Audio is interleaved about every half second of video time.
     let mut pcm_done = 0usize;
     for (k, c) in seg.iter().enumerate() {
-        let upto = ((((c.t_ms - first.t_ms) + 500) * AUDIO_RATE as i64 / 1000) * 2) as usize;
-        if k == 0 || upto >= pcm_done + AUDIO_RATE as usize {
+        let upto = ((((c.t_ms - first.t_ms) + 500) * rate as i64 / 1000) * 2) as usize;
+        if k == 0 || upto >= pcm_done + rate as usize {
             let e = upto.min(pcm.len());
             if e > pcm_done {
                 match &mut w {
-                    W::Mp4(w) => w.add_audio(&pcm[pcm_done..e], AUDIO_RATE)?,
+                    W::Mp4(w) => w.add_audio(&pcm[pcm_done..e], rate)?,
                     W::Avi(w) => w.add_audio(&pcm[pcm_done..e])?,
                 }
                 pcm_done = e;
@@ -764,7 +787,7 @@ fn write_one(
     }
     if pcm_done < pcm.len() {
         match &mut w {
-            W::Mp4(w) => w.add_audio(&pcm[pcm_done..], AUDIO_RATE)?,
+            W::Mp4(w) => w.add_audio(&pcm[pcm_done..], rate)?,
             W::Avi(w) => w.add_audio(&pcm[pcm_done..])?,
         }
     }
@@ -779,9 +802,14 @@ fn write_one(
         "no audio found for this time".to_string()
     } else {
         format!(
-            "audio: {audio_chunks} AD chunks, {:.1} s of 16-bit PCM at {AUDIO_RATE} Hz",
-            pcm.len() as f64 / 2.0 / AUDIO_RATE as f64
+            "audio: {audio_chunks} chunks, {:.1} s of 16-bit PCM at {rate} Hz",
+            pcm.len() as f64 / 2.0 / rate as f64
         )
+    };
+    let stamp = match (first.origin, timed) {
+        (Origin::Avi, true) => "time from the file name in the AVI header, frames at the header's rate",
+        (Origin::Avi, false) => "recording time unknown (no AVI header before this piece)",
+        _ => "timestamps from recorder",
     };
     Ok(Some(Recovered {
         id,
@@ -799,17 +827,17 @@ fn write_one(
         duration_s: Some(durations.iter().map(|&d| d as f64).sum::<f64>() / 1000.0),
         pieces: Some(pieces),
         channel: Some(first.channel),
-        start_time: Some(start),
-        end_time: Some(format_time(last.t_ms)),
+        start_time: timed.then_some(start),
+        end_time: timed.then(|| format_time(last.t_ms)),
         config_source: Some(cfg.origin),
         status: if no_key { "partial" } else { "ok" }.into(),
         notes: if no_key {
             format!(
-                "timestamps from recorder; {sound}; first {lead} of {} frames have no key frame before them, so their picture is damaged",
+                "{stamp}; {sound}; first {lead} of {} frames have no key frame before them, so their picture is damaged",
                 seg.len()
             )
         } else {
-            format!("timestamps from recorder; {sound}")
+            format!("{stamp}; {sound}")
         },
         ..Default::default()
     }))

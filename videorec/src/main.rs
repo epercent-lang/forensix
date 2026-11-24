@@ -8,6 +8,7 @@
 
 mod apfs;
 mod avi;
+mod avimux;
 mod btrfs;
 mod codec;
 mod container;
@@ -86,6 +87,8 @@ enum Vendor {
     /// Always scan for multi-channel dashcam samples (channel marker after
     /// each frame, see mixcam.rs).
     Mixed,
+    /// Always scan for AVI chunks of several cameras (see avimux.rs).
+    AviMulti,
     /// Generic carving only.
     None,
 }
@@ -1077,6 +1080,42 @@ fn recover(
         }
         covered.normalize();
     }
+    // AVI chunks of dashcams with several cameras: split by stream number.
+    if vendor == Vendor::AviMulti
+        || (vendor == Vendor::Auto && avimux::detect(&src, &live_video_starts, &regions)?)
+    {
+        let gaps: Vec<(u64, u64)> = regions
+            .iter()
+            .flat_map(|&(a, b)| covered.clone().gaps(a, b))
+            .collect();
+        progress::stage(
+            "avi",
+            gaps.iter().map(|g| g.1 - g.0).sum(),
+            clip_extra.quiet,
+        );
+        let mut cov = Ranges::new();
+        let mut st = avimux::Stats::default();
+        let chunks = avimux::scan(&src, &gaps, &mut cov, &mut st)?;
+        progress::end_stage();
+        let mut by_month = jdr::Stats::new();
+        let (got, discarded) = jdr::write_clips(
+            &src,
+            &chunks,
+            out,
+            items.len() + 1,
+            &clip_opts,
+            &mut by_month,
+        )?;
+        summary.insert("avi_chunks".into(), serde_json::to_value(&st)?);
+        summary.insert("avi_segments_discarded".into(), discarded.into());
+        items.extend(got);
+        cov.normalize();
+        for (s, e) in cov.iter() {
+            covered.add(s, e);
+        }
+        covered.normalize();
+    }
+
     // Multi-channel dashcam samples: camera after every frame, time in the
     // text samples between them.
     if vendor == Vendor::Mixed
