@@ -802,7 +802,8 @@ fn write_one(
         "no audio found for this time".to_string()
     } else {
         format!(
-            "audio: {audio_chunks} chunks, {:.1} s of 16-bit PCM at {rate} Hz",
+            "audio: {audio_chunks} {}chunks, {:.1} s of 16-bit PCM at {rate} Hz",
+            if first.origin == Origin::Avi { "" } else { "AD " },
             pcm.len() as f64 / 2.0 / rate as f64
         )
     };
