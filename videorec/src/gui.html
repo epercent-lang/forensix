@@ -639,7 +639,7 @@ async function poll() {
 // ---- 3 results
 const cam = it => it.channel != null ? 'CAM' + (it.channel + 1) : '';
 const older = it => /earlier (ring )?pass|older footage/i.test(it.notes || '');
-const hasAudio = it => /audio: (\d+) AD/.test(it.notes || '');
+const hasAudio = it => /audio: (\d+) (AD )?chunks/.test(it.notes || '');
 const origin = it => (it.kind == 'jdr_clip' || it.kind == 'dvr_clip' ? older(it) : !it.live_file) ? 'deleted' : 'live';
 const good = it => it.status == 'ok';
 const when = it => it.start_time || it.modified || it.created || '';
@@ -858,6 +858,7 @@ function koNote(n) {
     .replace("time from the file name in the AVI header, frames at the header's rate", '시각은 AVI 머리의 파일 이름에서, 프레임 간격은 머리의 프레임 속도')
     .replace('recording time unknown (no AVI header before this piece)', '녹화 시각 모름 (이 조각 앞에 AVI 머리가 없음)')
     .replace(/^audio: (\d+) AD chunks, ([\d.]+) s of 16-bit PCM at (\d+) Hz$/, '소리: AD 청크 $1개, $2초 (16비트 PCM, $3Hz)')
+    .replace(/^audio: (\d+) chunks, ([\d.]+) s of 16-bit PCM at (\d+) Hz$/, '소리: 청크 $1개, $2초 (16비트 PCM, $3Hz)')
     .replace('no audio found for this time', '이 시간대의 소리 없음')
     .replace('sound not recovered (its coding in this recorder is not identified)', '소리는 복구하지 못함 (이 녹화기의 소리 형식을 아직 확인하지 못함)')
     .replace(/^first (\d+) of (\d+) frames have no key frame before them, so their picture is damaged$/, '앞쪽 $1/$2 프레임은 키프레임이 없어 화면이 깨집니다')
