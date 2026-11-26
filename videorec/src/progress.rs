@@ -125,6 +125,21 @@ pub fn advance(n: u64) {
     }
 }
 
+/// Bytes counted so far in the current stage.
+pub fn position() -> u64 {
+    STAGE.lock().unwrap().as_ref().map_or(0, |s| s.p.done)
+}
+
+/// Raises the current stage to `pos` bytes if it is behind.
+pub fn advance_to(pos: u64) {
+    if let Some(s) = STAGE.lock().unwrap().as_mut()
+        && pos > s.p.done
+    {
+        let n = pos - s.p.done;
+        s.p.add(n);
+    }
+}
+
 pub fn end_stage() {
     if let Some(old) = STAGE.lock().unwrap().take() {
         old.p.finish();

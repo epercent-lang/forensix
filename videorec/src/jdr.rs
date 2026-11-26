@@ -412,6 +412,38 @@ pub const AUDIO_RATE: u32 = 8000;
 /// PCM for `[t0, t1)` built from AD chunks sorted by time. Gaps longer than
 /// 200 ms are filled with silence so sound stays in step with the video.
 /// Returns (PCM bytes, chunks used).
+/// Reads chunk payloads through a window of several MiB: clips are written
+/// in recording order, which is mostly disk order, and one read per frame is
+/// slow on network shares and devices.
+struct Ahead<'a> {
+    src: &'a Source,
+    base: u64,
+    buf: Vec<u8>,
+}
+
+impl<'a> Ahead<'a> {
+    const WINDOW: usize = 8 << 20;
+    fn new(src: &'a Source) -> Self {
+        Ahead {
+            src,
+            base: 0,
+            buf: vec![],
+        }
+    }
+    fn get(&mut self, off: u64, len: usize) -> Result<Vec<u8>> {
+        if len > Self::WINDOW / 2 {
+            return self.src.read_vec(off, len);
+        }
+        if off < self.base || off + len as u64 > self.base + self.buf.len() as u64 {
+            self.buf = self.src.read_vec(off, Self::WINDOW)?;
+            self.base = off;
+        }
+        let a = (off - self.base) as usize;
+        let e = (a + len).min(self.buf.len());
+        Ok(self.buf[a.min(e)..e].to_vec())
+    }
+}
+
 fn audio_for(
     src: &Source,
     audio: &[Chunk],
@@ -424,12 +456,13 @@ fn audio_for(
     let hi = audio.partition_point(|a| a.t_ms < t1);
     let mut pcm: Vec<u8> = vec![];
     let slack = rate as i64 / 5 * 2;
+    let mut rd = Ahead::new(src);
     for a in &audio[lo..hi] {
         let at = ((a.t_ms - t0).max(0) * rate as i64 / 1000) * 2;
         if at > pcm.len() as i64 + slack {
             pcm.resize(at as usize, 0);
         }
-        let p = src.read_vec(a.payload(), a.size as usize)?;
+        let p = rd.get(a.payload(), a.size as usize)?;
         pcm.extend_from_slice(&p[..p.len() & !1]);
     }
     Ok((pcm, hi - lo))
@@ -528,6 +561,7 @@ pub fn write_clips(
             .map(|c| c.size as u64)
             .sum();
         let mut shown = 0u64;
+        let before = crate::progress::position();
         let mut v: Vec<&Chunk> = chunks
             .iter()
             .filter(|c| c.channel == ch && matches!(c.kind, Kind::Key | Kind::Frame))
@@ -555,9 +589,10 @@ pub fn write_clips(
             }
             let seg = &v[i..j];
             i = j;
-            let b: u64 = seg.iter().map(|c| c.size as u64).sum();
-            shown += b;
-            crate::progress::advance(b);
+            // Frames are counted while they are written (write_one); what the
+            // previous segments did not write is made up here.
+            crate::progress::advance_to(before + shown);
+            shown += seg.iter().map(|c| c.size as u64).sum::<u64>();
             // A clip starts at a key frame; segments with none are kept only
             // with `keep_without_key`.
             let k = seg
@@ -642,7 +677,7 @@ pub fn write_clips(
                 None => discarded += 1,
             }
         }
-        crate::progress::advance(all.saturating_sub(shown));
+        crate::progress::advance_to(before + all);
     }
     Ok((items, discarded))
 }
@@ -752,6 +787,7 @@ fn write_one(
             rate,
         )?),
     };
+    let mut rd = Ahead::new(src);
     // Audio is interleaved about every half second of video time.
     let mut pcm_done = 0usize;
     for (k, c) in seg.iter().enumerate() {
@@ -766,7 +802,8 @@ fn write_one(
                 pcm_done = e;
             }
         }
-        let p = src.read_vec(c.payload(), c.size as usize)?;
+        let p = rd.get(c.payload(), c.size as usize)?;
+        crate::progress::advance(c.size as u64);
         let key = c.kind == Kind::Key;
         keys += key as usize;
         match &mut w {

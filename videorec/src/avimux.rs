@@ -224,6 +224,8 @@ pub fn scan(
     // Picture size per stream, from the last SPS seen.
     let mut size: HashMap<u8, (u32, u32)> = HashMap::new();
     let mut unknown_runs = 0i64;
+    // Chunks of each accepted run: [a, b) in `out`.
+    let mut spans: Vec<(usize, usize)> = vec![];
     let mut done = 0u64;
     for &(start, end) in regions {
         crate::progress::region(start, done);
@@ -361,7 +363,7 @@ pub fn scan(
                     Err(_) => {
                         let endp = if step == Err(true) { p + 8 + len } else { p };
                         let r = run.take().unwrap();
-                        close(r, base + endp as u64, &mut out, covered, stats);
+                        close(r, base + endp as u64, &mut out, covered, stats, &mut spans);
                         i = endp.max(p + 1);
                     }
                 }
@@ -372,8 +374,24 @@ pub fn scan(
             base = at.max(base + 1);
         }
         if let Some(r) = run.take() {
-            close(r, at, &mut out, covered, stats);
+            close(r, at, &mut out, covered, stats, &mut spans);
         }
+    }
+    // The time of a run is the second in its file name, so a recording can
+    // seem to start a little before the previous one ends. Such a run is
+    // moved behind the previous one (by less than two seconds); otherwise
+    // the frames of both would be mixed when clips are put in time order.
+    spans.retain(|&(a, b)| a < b);
+    spans.sort_by_key(|&(a, _)| out[a].t_ms);
+    let mut prev_end = i64::MIN;
+    for &(a, b) in &spans {
+        let (first, last) = (out[a].t_ms, out[a..b].iter().map(|c| c.t_ms).max().unwrap());
+        let over = prev_end.saturating_sub(first);
+        let shift = if (1..2000).contains(&over) { over } else { 0 };
+        for c in &mut out[a..b] {
+            c.t_ms += shift;
+        }
+        prev_end = (last + shift + 34).max(prev_end);
     }
     // Frames found before the first key frame of their stream.
     for c in &mut out {
@@ -397,11 +415,19 @@ pub fn scan(
     Ok(out)
 }
 
-fn close(r: Run, end: u64, out: &mut Vec<Chunk>, covered: &mut Ranges, stats: &mut Stats) {
+fn close(
+    r: Run,
+    end: u64,
+    out: &mut Vec<Chunk>,
+    covered: &mut Ranges,
+    stats: &mut Stats,
+    spans: &mut Vec<(usize, usize)>,
+) {
     if r.chunks < MIN_CHUNKS {
         out.truncate(r.first_chunk);
         return;
     }
+    spans.push((r.first_chunk, out.len()));
     stats.runs += 1;
     stats.runs_with_file_name += (r.base_ms >= KNOWN_TIME_MS) as usize;
     covered.add(r.start, end);
