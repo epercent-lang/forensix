@@ -1051,7 +1051,12 @@ fn recover(
         let mut cov = Ranges::new();
         let mut st = dhav::Stats::default();
         let (chunks, older_frames) = dhav::scan(&src, &gaps, &mut cov, &mut st)?;
-        progress::end_stage();
+        // Writing the clips reads every frame again: shown as its own stage.
+        progress::stage(
+            "save",
+            chunks.iter().map(|c| c.size as u64).sum(),
+            clip_extra.quiet,
+        );
         let mut by_month = jdr::Stats::new();
         let (mut got, discarded) = jdr::write_clips(
             &src,
@@ -1061,6 +1066,7 @@ fn recover(
             &clip_opts,
             &mut by_month,
         )?;
+        progress::end_stage();
         let mut older = 0;
         for r in got.iter_mut() {
             if older_frames.contains(&r.source_start) {
@@ -1096,7 +1102,12 @@ fn recover(
         let mut cov = Ranges::new();
         let mut st = avimux::Stats::default();
         let chunks = avimux::scan(&src, &gaps, &mut cov, &mut st)?;
-        progress::end_stage();
+        // Writing the clips reads every frame again: shown as its own stage.
+        progress::stage(
+            "save",
+            chunks.iter().map(|c| c.size as u64).sum(),
+            clip_extra.quiet,
+        );
         let mut by_month = jdr::Stats::new();
         let (got, discarded) = jdr::write_clips(
             &src,
@@ -1106,6 +1117,7 @@ fn recover(
             &clip_opts,
             &mut by_month,
         )?;
+        progress::end_stage();
         summary.insert("avi_chunks".into(), serde_json::to_value(&st)?);
         summary.insert("avi_segments_discarded".into(), discarded.into());
         items.extend(got);
@@ -1139,7 +1151,12 @@ fn recover(
             clip_opts.keep_without_key,
             &mut st,
         )?;
-        progress::end_stage();
+        // Writing the clips reads every frame again: shown as its own stage.
+        progress::stage(
+            "save",
+            chunks.iter().map(|c| c.size as u64).sum(),
+            clip_extra.quiet,
+        );
         let mut by_month = jdr::Stats::new();
         let (got, discarded) = jdr::write_clips(
             &src,
@@ -1149,6 +1166,7 @@ fn recover(
             &clip_opts,
             &mut by_month,
         )?;
+        progress::end_stage();
         summary.insert("mix_frames".into(), serde_json::to_value(&st)?);
         summary.insert("mix_segments_discarded".into(), discarded.into());
         summary.insert("mix_by_month".into(), serde_json::to_value(&by_month)?);

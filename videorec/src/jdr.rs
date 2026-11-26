@@ -514,7 +514,20 @@ pub fn write_clips(
     };
     audio.sort_by_key(|c| (c.t_ms, c.off));
     audio.dedup_by_key(|c| c.t_ms);
+    crate::progress::advance(
+        chunks
+            .iter()
+            .filter(|c| !matches!(c.kind, Kind::Key | Kind::Frame))
+            .map(|c| c.size as u64)
+            .sum(),
+    );
     for ch in channels {
+        let all: u64 = chunks
+            .iter()
+            .filter(|c| c.channel == ch && matches!(c.kind, Kind::Key | Kind::Frame))
+            .map(|c| c.size as u64)
+            .sum();
+        let mut shown = 0u64;
         let mut v: Vec<&Chunk> = chunks
             .iter()
             .filter(|c| c.channel == ch && matches!(c.kind, Kind::Key | Kind::Frame))
@@ -542,6 +555,9 @@ pub fn write_clips(
             }
             let seg = &v[i..j];
             i = j;
+            let b: u64 = seg.iter().map(|c| c.size as u64).sum();
+            shown += b;
+            crate::progress::advance(b);
             // A clip starts at a key frame; segments with none are kept only
             // with `keep_without_key`.
             let k = seg
@@ -626,6 +642,7 @@ pub fn write_clips(
                 None => discarded += 1,
             }
         }
+        crate::progress::advance(all.saturating_sub(shown));
     }
     Ok((items, discarded))
 }

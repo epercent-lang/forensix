@@ -118,6 +118,13 @@ pub fn at(pos: u64) {
     }
 }
 
+/// Adds `n` bytes to the current stage (stages without positions).
+pub fn advance(n: u64) {
+    if let Some(s) = STAGE.lock().unwrap().as_mut() {
+        s.p.add(n);
+    }
+}
+
 pub fn end_stage() {
     if let Some(old) = STAGE.lock().unwrap().take() {
         old.p.finish();
